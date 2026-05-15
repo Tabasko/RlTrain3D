@@ -155,6 +155,7 @@ void RemoveTile(int idx) {
 }
 
 void PlaceTile(TileType type, Vector3 pos, float heading, ArcDirection dir) {
+    // TODO check the placement here
     PlacedTile t;
     t.type      = type;
     t.direction = dir;

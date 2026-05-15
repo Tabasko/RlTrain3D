@@ -217,6 +217,9 @@ void TrackSystemInit() {
 }
 
 void TrackSystemUpdate() {
+    // ── Mode activation ────────────────────────────────────────────────────
+    // Events from the UI flip the two mutually-exclusive editing modes and
+    // reset all transient state so there is no carry-over between sessions.
     if (gs.events.has(EVENT_START_TRACK_EDIT)) {
         gs.app.track_editing = true;
         gs.app.erase_editing = false;
@@ -232,7 +235,10 @@ void TrackSystemUpdate() {
 
     if (!gs.app.track_editing && !gs.app.erase_editing) return;
 
-    // --- Erase mode ---
+    // ── Erase mode ─────────────────────────────────────────────────────────
+    // Left-drag draws a screen-space rectangle.  On release every tile whose
+    // ep[0] projects into that rectangle is deleted (reverse iteration keeps
+    // indices stable as RemoveTile shifts the vector).
     if (gs.app.erase_editing) {
         if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
             s_erase_start = s_erase_end = GetMousePosition();
@@ -242,6 +248,7 @@ void TrackSystemUpdate() {
             s_erase_end = GetMousePosition();
 
         if (s_erase_drag && IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
+            // TODO: highlight selected tiles red before committing the delete
             s_erase_drag = false;
             Rectangle r = {
                 fminf(s_erase_start.x, s_erase_end.x),
@@ -256,6 +263,7 @@ void TrackSystemUpdate() {
             }
             RebuildInstanceBuffers();
         }
+
         if (IsMouseButtonPressed(MOUSE_RIGHT_BUTTON) || IsKeyPressed(KEY_ESCAPE)) {
             s_erase_drag         = false;
             gs.app.erase_editing = false;
@@ -263,17 +271,18 @@ void TrackSystemUpdate() {
         return;
     }
 
-    // --- Track placement mode ---
+    // ── Cursor resolution ──────────────────────────────────────────────────
+    // Ray-cast the mouse onto the Y=0 ground plane, then quantise to the grid.
     s_has_cursor = GroundPos(&s_cursor);
     if (!s_has_cursor) return;
 
-    // Grid snap.
     s_cursor.x = roundf(s_cursor.x / GRID_CELL) * GRID_CELL;
     s_cursor.z = roundf(s_cursor.z / GRID_CELL) * GRID_CELL;
 
-    // Endpoint snap (overrides grid snap).
-    // Snaps to any endpoint not yet in a junction — both open endpoints (for direct
-    // linking) and directly-linked endpoints (for junction upgrade).
+    // ── Endpoint snap ──────────────────────────────────────────────────────
+    // Overrides the grid position when the cursor is within SNAP_EP_R of any
+    // endpoint that has not yet been absorbed into a junction.  This covers
+    // both open endpoints (direct link) and already-linked ones (junction upgrade).
     s_cursor_snapped = false;
     s_snap_tile      = TILE_NO_LINK;
     s_snap_ep        = TILE_NO_LINK;
@@ -291,25 +300,35 @@ void TrackSystemUpdate() {
         if (s_cursor_snapped) break;
     }
 
-    // T cycles tile type; R / Shift+R rotates placement heading in 15° / 45° steps.
+    // ── Keyboard shortcuts ─────────────────────────────────────────────────
+    // T: cycle through tile types.
     if (IsKeyPressed(KEY_T))
         s_dbg_tile = (TileType)((s_dbg_tile + 1) % TILE_TYPE_COUNT);
+
+    // R: rotate placement heading. Shift gives a coarser 45° jump for quick
+    // right-angle layouts; plain R steps by the minimum track angle of 15°.
     if (IsKeyPressed(KEY_R)) {
         float step = (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT))
                      ? DEG45 : DEG15;
         s_heading_offset = NormAngle(s_heading_offset + step);
     }
 
-    // Returns the natural continuation heading when snapping to an open endpoint:
-    // ep[1] (exit end) → continue forward; ep[0] (entry end) → extend backward.
+    // D: cycle the traffic-direction constraint written into placed tile arcs.
+    if (IsKeyPressed(KEY_D)) {
+        if      (s_place.dir == ARC_DIR_BOTH)   s_place.dir = ARC_DIR_A_TO_B;
+        else if (s_place.dir == ARC_DIR_A_TO_B) s_place.dir = ARC_DIR_B_TO_A;
+        else                                     s_place.dir = ARC_DIR_BOTH;
+    }
+
+    // ── Ghost tile ─────────────────────────────────────────────────────────
+    // Rebuilt every frame so the preview tracks the cursor in real time.
+    // SnapHeading derives the natural continuation direction from a snapped endpoint:
+    //   ep[1] (exit) → heading forward; ep[0] (entry) → heading reversed (extend backward).
     auto SnapHeading = [&](int tile, int ep) -> float {
         float eh = s_tiles[tile].eps[ep].heading;
         return (ep == 0) ? NormAngle(eh + (float)M_PI) : eh;
     };
 
-    // Build ghost tile — always follows the cursor (grid/endpoint snap applied above).
-    // Chaining works naturally: the placed tile's exit becomes an open endpoint that
-    // the cursor snaps to on the next frame, aligning the next ghost automatically.
     s_ghost.clear();
     s_ghost_invalid = false;
     {
@@ -322,33 +341,28 @@ void TrackSystemUpdate() {
         if (IsLeftCurve(s_dbg_tile)) gt.world = MirrorX(gt.world);
         s_ghost.push_back(gt);
 
+        // Collision check: walk to the exit point and test against existing geometry.
         Vector3 ghost_exit; float ghost_exit_h;
         WalkTile(s_dbg_tile, s_cursor, ghost_heading, &ghost_exit, &ghost_exit_h);
         if (GhostCollides(s_cursor, ghost_exit))
             s_ghost_invalid = true;
     }
 
-    // Left-click: place tile at cursor (snapped position when applicable).
+    // ── Placement commit / cancel ──────────────────────────────────────────
+    // Left-click commits when the ghost is valid.  Heading offset resets so
+    // the next tile inherits the natural continuation direction from the snap.
     if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) && !s_ghost_invalid) {
         float base_h = s_cursor_snapped ? SnapHeading(s_snap_tile, s_snap_ep) : 0.0f;
         float ph     = NormAngle(base_h + s_heading_offset);
         PlaceTile(s_dbg_tile, s_cursor, ph, s_place.dir);
-        s_heading_offset = 0.0f; // reset so next tile continues naturally from snap direction
+        s_heading_offset = 0.0f;
         RebuildInstanceBuffers();
     }
 
-    // Right-click / ESC: exit placement.
     if (IsMouseButtonPressed(MOUSE_RIGHT_BUTTON) || IsKeyPressed(KEY_ESCAPE)) {
         s_place              = {};
         gs.app.track_editing = false;
         s_ghost.clear();
-    }
-
-    // D: cycle direction constraint.
-    if (IsKeyPressed(KEY_D)) {
-        if      (s_place.dir == ARC_DIR_BOTH)   s_place.dir = ARC_DIR_A_TO_B;
-        else if (s_place.dir == ARC_DIR_A_TO_B) s_place.dir = ARC_DIR_B_TO_A;
-        else                                     s_place.dir = ARC_DIR_BOTH;
     }
 }
 
