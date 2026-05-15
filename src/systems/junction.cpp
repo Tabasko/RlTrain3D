@@ -1,76 +1,60 @@
 #include "junction.h"
-#include "track.h"
+#include "track_tiles.h"
+#include "track_geom.h"
 #include "../state/game_state.h"
 #include "../events/event_bus.h"
 #include "../colors.h"
 #include "raylib.h"
 #include "raymath.h"
 
-static constexpr float SPLIT_SNAP_RADIUS = 1.5f; // world-space snap radius for arc finding
-
-// ---------------------------------------------------------------------------
-// Placement state
-// ---------------------------------------------------------------------------
-struct JunctionPlacement {
-    bool     has_hit = false;
-    ArcPoint hit     = {};
-};
-
-static JunctionPlacement s_place;
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-static bool GroundPosRaw(Vector3 *out) {
-    Ray ray = GetMouseRay(GetMousePosition(), gs.camera.cam);
-    if (fabsf(ray.direction.y) < 0.001f) return false;
-    float t = -ray.position.y / ray.direction.y;
-    if (t < 0.0f) return false;
-    *out = Vector3Add(ray.position, Vector3Scale(ray.direction, t));
-    return true;
-}
-
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-void JunctionSystemInit() {}
+void JunctionSystemInit()    {}
+void JunctionSystemDestroy() {}
 
 void JunctionSystemUpdate() {
-    if (gs.events.has(EVENT_START_JUNCTION_EDIT)) {
-        s_place              = {};
+    if (gs.events.has(EVENT_START_JUNCTION_EDIT))
         gs.app.junction_editing = true;
+    if (!gs.app.junction_editing) return;
+    if (IsMouseButtonPressed(MOUSE_RIGHT_BUTTON) || IsKeyPressed(KEY_ESCAPE)) {
+        gs.app.junction_editing = false;
+        return;
     }
 
-    if (!gs.app.junction_editing) return;
-
-    if (IsMouseButtonPressed(MOUSE_RIGHT_BUTTON) || IsKeyPressed(KEY_ESCAPE)) {
-        s_place              = {};
-        gs.app.junction_editing = false;
+    // Left-click: throw the nearest junction.
+    if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+        Ray ray = GetMouseRay(GetMousePosition(), gs.camera.cam);
+        if (fabsf(ray.direction.y) > 0.001f) {
+            float t = -ray.position.y / ray.direction.y;
+            if (t > 0.0f) {
+                Vector3 pos = Vector3Add(ray.position, Vector3Scale(ray.direction, t));
+                pos.y = 0.0f;
+                TryThrowJunction(pos);
+            }
+        }
     }
 }
 
 void JunctionSystemDraw3D() {
-    if (!gs.app.junction_editing || !s_place.has_hit) return;
+    if (s_junctions.empty()) return;
 
-    // Show the proposed split point and the arc direction at that point
-    DrawSphere(s_place.hit.pos, 0.25f, COL_JUNCTION);
-    Vector3 fwd = Vector3Scale(s_place.hit.tangent, 2.0f);
-    DrawLine3D(Vector3Subtract(s_place.hit.pos, fwd),
-               Vector3Add(s_place.hit.pos, fwd), COL_JUNCTION);
+    for (const JunctionNode& jn : s_junctions) {
+        // Central marker.
+        DrawSphere(jn.pos, 0.35f, COL_JUNCTION);
+
+        if (jn.leg_count < 3) continue;
+
+        // Lines to each leg endpoint: stem and active branch bright, inactive dim.
+        for (int l = 0; l < jn.leg_count; l++) {
+            const TileEndpoint& ep = s_tiles[jn.legs[l].tile_idx].eps[jn.legs[l].ep_idx];
+            bool active = (l == 0) || (l == jn.thrown + 1);
+            DrawLine3D(jn.pos, ep.pos, active ? COL_JUNCTION : COL_JUNCTION_DIM);
+        }
+    }
 }
 
 void JunctionSystemDraw2D() {
     if (!gs.app.junction_editing) return;
-    int sh = GetScreenHeight();
-    if (!s_place.has_hit) {
-        DrawText("Hover over a track arc to place a junction node",
-                 20, sh - 40, 20, COL_JUNCTION);
-    } else {
-        DrawText("LMB: split arc here | RMB / ESC: cancel",
-                 20, sh - 40, 20, COL_UI_TEXT);
-    }
+    int count = (int)s_junctions.size();
+    DrawText(TextFormat("Junction mode — %d junction%s  [LMB] throw  [RMB/ESC] exit",
+             count, count == 1 ? "" : "s"),
+             20, GetScreenHeight() - 40, 20, COL_JUNCTION);
 }
-
-void JunctionSystemDestroy() {}

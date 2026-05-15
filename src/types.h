@@ -101,6 +101,58 @@ typedef enum {
   ARC_DIR_B_TO_A = -1,
 } ArcDirection;
 
+// ---------------------------------------------------------------------------
+// Tile-based track system
+// ---------------------------------------------------------------------------
+
+// Catalog of pre-baked tile shapes. Left-curve variants share the right-curve
+// mesh but are rendered with an X-negated world transform.
+typedef enum {
+  TILE_STRAIGHT_S   = 0, // short straight (~4 m)
+  TILE_STRAIGHT_L,       // long straight  (~8 m)
+  TILE_CURVE_R1_15,      // R=20 m, 15° right arc
+  TILE_CURVE_R1_15_L,    // R=20 m, 15° left  arc
+  TILE_CURVE_R2_15,      // R=40 m, 15° right arc
+  TILE_CURVE_R2_15_L,    // R=40 m, 15° left  arc
+  TILE_CURVE_R2_30,      // R=40 m, 30° right arc
+  TILE_CURVE_R2_30_L,    // R=40 m, 30° left  arc
+  TILE_TYPE_COUNT
+} TileType;
+
+// One endpoint of a placed tile.
+typedef struct {
+  Vector3 pos;              // world-space position
+  float   heading;          // world-space heading in radians (0 = +Z)
+  int     linked_tile;      // index into placed-tile array, -1 = open
+  int     linked_ep;        // endpoint index on the linked tile
+  int     linked_junction;  // index into s_junctions, -1 if not part of one
+} TileEndpoint;
+
+// One placed tile instance.
+typedef struct {
+  TileType     type;
+  ArcDirection direction; // traversal constraint
+  Matrix       world;     // world transform, computed once at placement
+  TileEndpoint eps[2];    // [0]=entry  [1]=exit
+  int          ep_count;  // 2 for straight/curve
+} PlacedTile;
+
+// One leg of a 3-way junction — identifies which tile endpoint participates.
+typedef struct {
+    int tile_idx;
+    int ep_idx;
+} JunctionLeg;
+
+// 3-way junction node. legs[0] is the stem; thrown selects the active branch:
+//   thrown=0  →  legs[0] ↔ legs[1]
+//   thrown=1  →  legs[0] ↔ legs[2]
+typedef struct {
+    Vector3     pos;
+    JunctionLeg legs[3];
+    int         leg_count; // grows as tracks connect; functional at 3
+    int         thrown;    // 0 or 1
+} JunctionNode;
+
 // Detail level derived from camera zoom each frame.
 // All draw functions read this to choose their rendering path.
 typedef enum {

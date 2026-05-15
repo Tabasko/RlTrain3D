@@ -1,397 +1,184 @@
 #include "track.h"
+#include "track_geom.h"
+#include "track_tiles.h"
 #include "../state/game_state.h"
 #include "../events/event_bus.h"
 #include "../colors.h"
 #include "raylib.h"
 #include "raymath.h"
 #include <vector>
-#include <cmath>
-
-static constexpr float SNAP_DEFAULT   = 1.0f;
-static constexpr float ANCHOR_HIT_PX  = 14.0f;  // screen-pixel radius for drag detection
-static constexpr int   ARC_INT_STEPS  = 128;     // arc-length integration steps per segment
-static constexpr float TILE_GAP_TRIM  = 0.1f;   // close inter-tile gaps; increase until tiles touch
-static constexpr float ALIGN_EPSILON  = 0.05f;  // world-space tolerance for axis-alignment guides
-static constexpr float SNAP_EP_RADIUS = 1.2f;   // endpoint snap radius in world units
-static constexpr float GUIDE_HALF_LEN = 80.0f;  // half-length of axis guide lines
-static constexpr float MAX_TURN_COS      = 0.7071f; // cos(45°) — minimum dot product of consecutive segment directions
-static constexpr float ARC_SUBDIVIDE_COS = 0.9659f; // cos(15°) — insert arc midpoint anchor when turn exceeds this
-static constexpr float DRAG_THRESHOLD_PX = 5.0f;    // pixels of movement before a committed-anchor click becomes a drag
+#include <cstdio>
 
 // ---------------------------------------------------------------------------
-// Asset state — one model loaded once, tiled along every committed spline
+// Tile name strings — used for save/load and the debug HUD.
 // ---------------------------------------------------------------------------
-static Model    s_model;
-static Material s_ghost_material;     // flat COL_TRACK_GHOST material for ghost preview
-static Material s_ghost_material_bad; // red COL_TRACK_GHOST_BAD material for invalid curve preview
-static float    s_model_length;       // extent of the model along its forward axis
-static Vector3  s_model_forward;      // local forward axis of the loaded model (+Z or +X)
-static bool     s_model_loaded = false;
-
-// ---------------------------------------------------------------------------
-// Internal types
-// ---------------------------------------------------------------------------
-
-// A committed track line — raw Catmull-Rom anchors and per-segment instance matrices.
-// instances[i] holds one transform per tiled model copy for segment (anchors[i], anchors[i+1]).
-struct TrackLine {
-    std::vector<Vector3>             anchors;
-    std::vector<std::vector<Matrix>> instances;
-};
-
-// Live placement state — lives entirely within the system, not in gs.
-struct Placement {
-    std::vector<Vector3> anchors;
-    int     drag_idx      = -1;
-    float   snap_size     = SNAP_DEFAULT;
-    bool    has_entry_dir = false; // true when the first anchor snapped to a committed anchor
-    Vector3 entry_dir     = {};    // forward direction of the committed track at the snap point
+static const char *TILE_NAMES[TILE_TYPE_COUNT] = {
+    "STRAIGHT_S", "STRAIGHT_L",
+    "CURVE_R1_15", "CURVE_R1_15_L",
+    "CURVE_R2_15", "CURVE_R2_15_L",
+    "CURVE_R2_30", "CURVE_R2_30_L",
 };
 
 // ---------------------------------------------------------------------------
-// Static state
+// Mesh / material state
 // ---------------------------------------------------------------------------
-static std::vector<TrackLine> s_lines;
-static Placement              s_place;
-static Vector3                s_cursor;
-static bool                   s_has_cursor;
-static bool                   s_has_guide_x;   // axis-alignment guide active on X
-static float                  s_guide_x;
-static bool                   s_has_guide_z;   // axis-alignment guide active on Z
-static float                  s_guide_z;
-static bool                   s_has_snap_ep;         // cursor snapped to a committed track anchor
-static int                    s_snap_line   = -1;    // line index of the current snap target
-static int                    s_snap_anchor = -1;    // anchor index of the current snap target
-static float                  s_ghost_length;     // total arc length of the in-progress ghost curve
-static bool                   s_curve_too_sharp;  // proposed new anchor would exceed MAX_TURN_COS (45°)
-static int                    s_edit_line_idx   = -1; // committed line whose anchor is being dragged
-static int                    s_edit_anchor_idx = -1; // index within that line's anchor array
-// Pending-edit: mouse is down on a committed anchor but hasn't moved enough to confirm a drag.
-// On release without movement it becomes a "start placement from here" click instead.
-static bool                   s_pending_edit        = false;
-static int                    s_pending_edit_line   = -1;
-static int                    s_pending_edit_anchor = -1;
-static Vector2                s_pending_edit_origin = {};
-static bool                   s_erase_dragging;       // marquee drag in progress
-static Vector2                s_erase_start;          // screen position where the drag began
-static Vector2                s_erase_end;            // current drag end (updated each frame)
+// Mesh indices: L-variants share the mesh of their R counterpart.
+static const int MESH_IDX[TILE_TYPE_COUNT] = {
+    0, // STRAIGHT_S    → mesh 0
+    1, // STRAIGHT_L    → mesh 1
+    2, // CURVE_R1_15   → mesh 2
+    2, // CURVE_R1_15_L → mesh 2 (mirrored)
+    3, // CURVE_R2_15   → mesh 3
+    3, // CURVE_R2_15_L → mesh 3
+    4, // CURVE_R2_30   → mesh 4
+    4, // CURVE_R2_30_L → mesh 4
+};
+static constexpr int NUM_MESHES = 5;
+
+static Model    s_meshes[NUM_MESHES];
+static bool     s_mesh_ok[NUM_MESHES];
+static Material s_mat_track;
+static Material s_mat_ghost;
+static Material s_mat_ghost_bad;
 
 // ---------------------------------------------------------------------------
-// Arc midpoint helper
+// Placement state machine
 // ---------------------------------------------------------------------------
-
-// Given anchor b with incoming direction from a, return the geometric midpoint of the
-// circular arc from b to c that is tangent to (b-a) at b.
-// When the three points are nearly collinear the linear midpoint is returned instead.
-static Vector3 ArcMidpoint(Vector3 a, Vector3 b, Vector3 c) {
-    Vector3 v1 = Vector3Normalize(Vector3Subtract(b, a));
-    // Left-hand perpendicular to v1 in the XZ plane.
-    Vector3 n  = { -v1.z, 0.0f, v1.x };
-    Vector3 d  = Vector3Subtract(c, b);
-    float   nd = n.x * d.x + n.z * d.z; // signed lateral offset of c from B along n
-
-    // Collinear / near-straight: the midpoint is just the linear midpoint.
-    if (fabsf(nd) < 0.0001f)
-        return { (b.x + c.x) * 0.5f, 0.0f, (b.z + c.z) * 0.5f };
-
-    // Signed radius of the circle tangent to v1 at b that passes through c.
-    float   R  = (d.x*d.x + d.z*d.z) / (2.0f * nd);
-    Vector3 O  = { b.x + R * n.x, 0.0f, b.z + R * n.z }; // circle centre
-    float   r  = fabsf(R);
-
-    // Angles of b and c viewed from the centre, then average for the arc midpoint.
-    float ab   = atan2f(b.z - O.z, b.x - O.x);
-    float ac   = atan2f(c.z - O.z, c.x - O.x);
-    float diff = ac - ab;
-    // Normalise to (−π, π] so we always take the shorter arc.
-    while (diff >  (float)M_PI) diff -= 2.0f * (float)M_PI;
-    while (diff < -(float)M_PI) diff += 2.0f * (float)M_PI;
-    float am   = ab + diff * 0.5f;
-
-    return { O.x + r * cosf(am), 0.0f, O.z + r * sinf(am) };
-}
+struct PlacementState {
+    bool    active        = false;
+    Vector3 start_pos     = {};
+    float   start_heading = 0.0f;
+    int     start_tile    = TILE_NO_LINK; // existing tile we continued from
+    int     start_ep      = TILE_NO_LINK;
+    std::vector<Vector3> waypoints;       // intermediate anchors
+    ArcDirection dir      = ARC_DIR_BOTH;
+};
+static PlacementState s_place;
 
 // ---------------------------------------------------------------------------
-// Centripetal Catmull-Rom sampling
-//
-// Phantom boundary points duplicate the first/last anchor so the curve
-// passes through both endpoints with a zero-tangent extrapolation.
-//
-// Centripetal parameterization spaces knots by sqrt(chord_length) rather than
-// uniformly. This prevents the outward bulge that standard CR produces on curves:
-// the curve energy is proportional to distance, so the spline always follows the
-// inside of a turn rather than briefly overshooting outward.
+// Ghost sequence — recomputed each frame during placement
 // ---------------------------------------------------------------------------
-
-static Vector3 AnchorAt(const std::vector<Vector3>& pts, int i) {
-    if (i < 0)                return pts[0];
-    if (i >= (int)pts.size()) return pts.back();
-    return pts[i];
-}
-
-// Centripetal knot spacing: sqrt of the XZ chord length.
-static float KnotDist(Vector3 a, Vector3 b) {
-    return sqrtf(Vector3Distance(a, b));
-}
-
-// Linearly interpolate a→b over knot interval [ta, tb] at tc.
-// Returns a when the interval is degenerate (duplicate boundary anchors).
-static Vector3 KnotLerp(Vector3 a, Vector3 b, float ta, float tb, float tc) {
-    if (fabsf(tb - ta) < 0.0001f) return a;
-    float f = (tc - ta) / (tb - ta);
-    return { a.x + f*(b.x - a.x), 0.0f, a.z + f*(b.z - a.z) };
-}
-
-// Sample position at t ∈ [0,1] for segment (seg, seg+1) via the Barry-Goldman algorithm.
-static Vector3 SampleCR(const std::vector<Vector3>& pts, int seg, float t) {
-    Vector3 p0 = AnchorAt(pts, seg - 1);
-    Vector3 p1 = pts[seg];
-    Vector3 p2 = pts[seg + 1];
-    Vector3 p3 = AnchorAt(pts, seg + 2);
-
-    float k0 = 0.0f;
-    float k1 = k0 + KnotDist(p0, p1);
-    float k2 = k1 + KnotDist(p1, p2);
-    float k3 = k2 + KnotDist(p2, p3);
-    float tc = k1 + t * (k2 - k1); // remap t∈[0,1] → knot interval [k1, k2]
-
-    Vector3 A1 = KnotLerp(p0, p1, k0, k1, tc);
-    Vector3 A2 = KnotLerp(p1, p2, k1, k2, tc);
-    Vector3 A3 = KnotLerp(p2, p3, k2, k3, tc);
-    Vector3 B1 = KnotLerp(A1, A2, k0, k2, tc);
-    Vector3 B2 = KnotLerp(A2, A3, k1, k3, tc);
-    return KnotLerp(B1, B2, k1, k2, tc);
-}
-
-// Normalised tangent at t via central finite difference — sufficient for tile orientation.
-static Vector3 TangentCR(const std::vector<Vector3>& pts, int seg, float t) {
-    constexpr float eps = 0.001f;
-    Vector3 a = SampleCR(pts, seg, fmaxf(0.0f, t - eps));
-    Vector3 b = SampleCR(pts, seg, fminf(1.0f, t + eps));
-    Vector3 d = Vector3Subtract(b, a);
-    float   len = Vector3Length(d);
-    return (len > 0.0001f) ? Vector3Scale(d, 1.0f / len) : Vector3{1, 0, 0};
-}
+struct GhostTile { TileType type; Matrix world; };
+static std::vector<GhostTile> s_ghost;
+static bool                   s_ghost_invalid = false;
 
 // ---------------------------------------------------------------------------
-// Arc-length reparameterization
-//
-// Catmull-Rom curves aren't arc-length parameterized: equal t-steps produce
-// unequal world-space distances, which gets worse on tight curves. To place
-// tiles at equal world-space intervals we build a (t → cumulative arc) LUT,
-// then invert it to find the t that corresponds to any desired arc distance.
+// Cursor
 // ---------------------------------------------------------------------------
+static Vector3 s_cursor;
+static bool    s_has_cursor;
+static bool    s_cursor_snapped; // cursor locked to an existing open endpoint
+static int     s_snap_tile = TILE_NO_LINK;
+static int     s_snap_ep   = TILE_NO_LINK;
 
-struct ArcLUTEntry { float t, arc; };
+// ---------------------------------------------------------------------------
+// Erase mode
+// ---------------------------------------------------------------------------
+static bool    s_erase_drag;
+static Vector2 s_erase_start;
+static Vector2 s_erase_end;
 
-// Build the arc-length LUT for segment (seg, seg+1) using ARC_INT_STEPS samples.
-static std::vector<ArcLUTEntry> BuildArcLUT(const std::vector<Vector3>& anchors, int seg) {
-    std::vector<ArcLUTEntry> lut;
-    lut.reserve(ARC_INT_STEPS + 1);
-    float    arc  = 0.0f;
-    Vector3  prev = SampleCR(anchors, seg, 0.0f);
-    lut.push_back({0.0f, 0.0f});
-    for (int i = 1; i <= ARC_INT_STEPS; i++) {
-        float   t   = (float)i / ARC_INT_STEPS;
-        Vector3 cur = SampleCR(anchors, seg, t);
-        arc += Vector3Length(Vector3Subtract(cur, prev));
-        lut.push_back({t, arc});
-        prev = cur;
+// ---------------------------------------------------------------------------
+// Debug placement (T cycles tile type, R rotates heading)
+// ---------------------------------------------------------------------------
+static TileType s_dbg_tile      = TILE_STRAIGHT_S;
+static float    s_heading_offset = 0.0f;
+
+// ---------------------------------------------------------------------------
+// Dubins path (currently unused — will drive automatic path generation)
+// ---------------------------------------------------------------------------
+// Returns ghost tiles for the best-fitting tile path from (start_pos, start_heading)
+// to target_pos. If has_target_heading, curves to match the arrival direction.
+static void ComputePath(Vector3 start_pos, float start_heading,
+                        Vector3 target_pos,
+                        bool has_target_heading, float target_heading,
+                        std::vector<GhostTile>& out, bool& invalid) {
+    out.clear();
+    invalid = false;
+
+    float dx = target_pos.x - start_pos.x;
+    float dz = target_pos.z - start_pos.z;
+    float bearing = atan2f(dx, dz);
+
+    float turn_delta  = NormAngle(bearing - start_heading);
+    int   steps       = (int)roundf(turn_delta / DEG15);
+    float snapped_turn = steps * DEG15;
+    bool  left_turn   = (snapped_turn < 0.0f);
+    int   abs_steps   = abs(steps);
+
+    TileType curve_r  = left_turn ? TILE_CURVE_R2_15_L : TILE_CURVE_R2_15;
+    Vector3 cur_pos   = start_pos;
+    float cur_heading = start_heading;
+
+    for (int i = 0; i < abs_steps; i++) {
+        GhostTile gt;
+        gt.type  = curve_r;
+        gt.world = TileMatrix(cur_pos, cur_heading);
+        if (IsLeftCurve(curve_r)) gt.world = MirrorX(gt.world);
+        out.push_back(gt);
+        WalkTile(curve_r, cur_pos, cur_heading, &cur_pos, &cur_heading);
     }
-    return lut;
-}
 
-// Given a desired arc distance d, return the t that corresponds to it via
-// binary search + linear interpolation in the LUT.
-static float ArcToT(const std::vector<ArcLUTEntry>& lut, float d) {
-    if (d <= 0.0f)             return 0.0f;
-    if (d >= lut.back().arc)   return 1.0f;
+    float dist  = Vector3Distance(cur_pos, target_pos);
+    float len_l = s_geom[TILE_STRAIGHT_L].exit_pos.z;
+    float len_s = s_geom[TILE_STRAIGHT_S].exit_pos.z;
 
-    int lo = 0, hi = (int)lut.size() - 1;
-    while (hi - lo > 1) {
-        int mid = (lo + hi) / 2;
-        if (lut[mid].arc < d) lo = mid; else hi = mid;
+    int arrival_steps = 0;
+    if (has_target_heading) {
+        float arrival_delta = NormAngle(target_heading - cur_heading);
+        int arr_steps = (int)roundf(arrival_delta / DEG15);
+        arrival_steps = abs(arr_steps);
+        dist -= arrival_steps * s_geom[TILE_CURVE_R2_15].length;
+        if (dist < 0.0f) { invalid = true; }
     }
-    float frac = (d - lut[lo].arc) / (lut[hi].arc - lut[lo].arc);
-    return lut[lo].t + frac * (lut[hi].t - lut[lo].t);
-}
 
-// ---------------------------------------------------------------------------
-// Instance matrix
-// ---------------------------------------------------------------------------
-
-// Build a TRS matrix that places the loaded model at `pos` oriented along `tangent`.
-// The model's local forward axis is rotated to match the spline tangent.
-static Matrix InstanceMatrix(Vector3 pos, Vector3 tangent) {
-    Quaternion rot = QuaternionFromVector3ToVector3(s_model_forward, tangent);
-    Matrix matR    = QuaternionToMatrix(rot);
-    Matrix matT    = MatrixTranslate(pos.x, pos.y, pos.z);
-    return MatrixMultiply(matR, matT); // rotate then translate into world space
-}
-
-// ---------------------------------------------------------------------------
-// Segment instance building
-// ---------------------------------------------------------------------------
-
-// Compute transform matrices for all tiled model instances along one inter-anchor segment.
-// Tiles are placed at equal world-space intervals using arc-length reparameterization,
-// so spacing stays consistent on both straight sections and curves.
-static std::vector<Matrix> BuildSegmentInstances(const std::vector<Vector3>& anchors, int seg) {
-    std::vector<Matrix> out;
-    if (!s_model_loaded) return out;
-
-    auto  lut      = BuildArcLUT(anchors, seg);
-    float total    = lut.back().arc;
-    float tile_len = s_model_length - TILE_GAP_TRIM;
-    int   n        = (int)fmaxf(1.0f, roundf(total / tile_len));
-    float spacing  = total / (float)n; // actual world-space interval between tile centres
-
-    out.reserve(n);
-    for (int i = 0; i < n; i++) {
-        float   d  = (i + 0.5f) * spacing; // arc distance to this tile's centre
-        float   t  = ArcToT(lut, d);
-        Vector3 p  = SampleCR(anchors, seg, t);
-        Vector3 tn = TangentCR(anchors, seg, t);
-        out.push_back(InstanceMatrix(p, tn));
+    if (!invalid && dist > 0.0f) {
+        int n_long  = (int)(dist / len_l);
+        float rem   = dist - n_long * len_l;
+        int n_short = (rem >= len_s * 0.5f) ? 1 : 0;
+        for (int i = 0; i < n_long; i++) {
+            GhostTile gt;
+            gt.type  = TILE_STRAIGHT_L;
+            gt.world = TileMatrix(cur_pos, cur_heading);
+            out.push_back(gt);
+            WalkTile(TILE_STRAIGHT_L, cur_pos, cur_heading, &cur_pos, &cur_heading);
+        }
+        for (int i = 0; i < n_short; i++) {
+            GhostTile gt;
+            gt.type  = TILE_STRAIGHT_S;
+            gt.world = TileMatrix(cur_pos, cur_heading);
+            out.push_back(gt);
+            WalkTile(TILE_STRAIGHT_S, cur_pos, cur_heading, &cur_pos, &cur_heading);
+        }
     }
-    return out;
+
+    if (has_target_heading && !invalid) {
+        float arrival_delta = NormAngle(target_heading - cur_heading);
+        int arr_steps = (int)roundf(arrival_delta / DEG15);
+        bool arr_left = (arr_steps < 0);
+        TileType arr_curve = arr_left ? TILE_CURVE_R2_15_L : TILE_CURVE_R2_15;
+        for (int i = 0; i < abs(arr_steps); i++) {
+            GhostTile gt;
+            gt.type  = arr_curve;
+            gt.world = TileMatrix(cur_pos, cur_heading);
+            if (IsLeftCurve(arr_curve)) gt.world = MirrorX(gt.world);
+            out.push_back(gt);
+            WalkTile(arr_curve, cur_pos, cur_heading, &cur_pos, &cur_heading);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Placement helpers
+// Ground picking — projects mouse ray onto Y=0 plane.
 // ---------------------------------------------------------------------------
-
-// Project mouse ray onto the Y=0 ground plane, snap to grid, write to *out.
-// Returns false when the ray is parallel to the plane or behind the camera.
-static bool GroundPos(Vector3 *out, float snap) {
+static bool GroundPos(Vector3 *out) {
     Ray ray = GetMouseRay(GetMousePosition(), gs.camera.cam);
     if (fabsf(ray.direction.y) < 0.001f) return false;
     float t = -ray.position.y / ray.direction.y;
     if (t < 0.0f) return false;
-    Vector3 p = Vector3Add(ray.position, Vector3Scale(ray.direction, t));
-    if (snap > 0.0f) {
-        out->x = roundf(p.x / snap) * snap;
-        out->z = roundf(p.z / snap) * snap;
-    } else {
-        out->x = p.x;
-        out->z = p.z;
-    }
+    *out = Vector3Add(ray.position, Vector3Scale(ray.direction, t));
     out->y = 0.0f;
     return true;
-}
-
-// Returns the index of the first anchor within ANCHOR_HIT_PX of the mouse, or -1.
-static int HitAnchor(const std::vector<Vector3>& anchors) {
-    Vector2 mouse = GetMousePosition();
-    for (int i = 0; i < (int)anchors.size(); i++) {
-        Vector2 s = GetWorldToScreen(anchors[i], gs.camera.cam);
-        if (Vector2Distance(s, mouse) < ANCHOR_HIT_PX) return i;
-    }
-    return -1;
-}
-
-// Finds the first committed anchor within ANCHOR_HIT_PX of the mouse.
-// Writes the line and anchor indices to *line_out/*anchor_out; returns false if none found.
-static bool HitCommittedAnchor(int *line_out, int *anchor_out) {
-    Vector2 mouse = GetMousePosition();
-    for (int li = 0; li < (int)s_lines.size(); li++) {
-        for (int ai = 0; ai < (int)s_lines[li].anchors.size(); ai++) {
-            Vector2 s = GetWorldToScreen(s_lines[li].anchors[ai], gs.camera.cam);
-            if (Vector2Distance(s, mouse) < ANCHOR_HIT_PX) {
-                *line_out   = li;
-                *anchor_out = ai;
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-// Rebuilds all segment instance matrices for a line after one of its anchors was moved.
-static void RebuildLineInstances(TrackLine& line) {
-    int n_segs = (int)line.anchors.size() - 1;
-    line.instances.resize(n_segs);
-    for (int i = 0; i < n_segs; i++)
-        line.instances[i] = BuildSegmentInstances(line.anchors, i);
-}
-
-// Commit in-progress anchors as a new TrackLine. Requires at least 2 anchors.
-static void CommitPlacement() {
-    if ((int)s_place.anchors.size() < 2) return;
-
-    TrackLine line;
-    line.anchors = s_place.anchors;
-    int n_segs   = (int)s_place.anchors.size() - 1;
-    line.instances.resize(n_segs);
-    for (int i = 0; i < n_segs; i++)
-        line.instances[i] = BuildSegmentInstances(s_place.anchors, i);
-
-    s_lines.push_back(std::move(line));
-}
-
-// ---------------------------------------------------------------------------
-// Ghost drawing (must be called inside BeginMode3D)
-// ---------------------------------------------------------------------------
-
-// Draw the full ghost preview through all placed anchors + cursor using the actual
-// track mesh tiled along the spline, tinted with the ghost material.
-static void DrawGhostCurve(const std::vector<Vector3>& anchors, Vector3 cursor) {
-    if (!s_model_loaded) return;
-
-    std::vector<Vector3> pts = anchors;
-
-    // Mirror the auto-arc-midpoint logic so the ghost shows the intermediate anchor
-    // in real-time as the cursor moves, matching what will be committed on click.
-    // When only one anchor has been placed but an entry_dir is known (user snapped to
-    // existing track), use that direction so the preview is consistent with placement.
-    if (!pts.empty() && !s_curve_too_sharp) {
-        bool    has_v1  = false;
-        Vector3 gv1     = {};
-        Vector3 gv1_prev = {};
-        if (pts.size() >= 2) {
-            Vector3 prev = pts[pts.size() - 2];
-            Vector3 last = pts.back();
-            gv1      = Vector3Normalize(Vector3Subtract(last, prev));
-            gv1_prev = prev;
-            has_v1   = true;
-        } else if (s_place.has_entry_dir) {
-            gv1      = s_place.entry_dir;
-            gv1_prev = Vector3Subtract(pts[0], gv1);
-            has_v1   = true;
-        }
-        if (has_v1) {
-            Vector3 last = pts.back();
-            Vector3 v2   = Vector3Normalize(Vector3Subtract(cursor, last));
-            if (Vector3DotProduct(gv1, v2) < ARC_SUBDIVIDE_COS)
-                pts.push_back(ArcMidpoint(gv1_prev, last, cursor));
-        }
-    }
-
-    pts.push_back(cursor);
-
-    int n = (int)pts.size();
-    s_ghost_length = 0.0f;
-    for (int seg = 0; seg < n - 1; seg++) {
-        // Accumulate arc length before building instances (BuildSegmentInstances
-        // rebuilds the LUT internally — minor redundancy accepted for ghost-only path).
-        auto lut = BuildArcLUT(pts, seg);
-        s_ghost_length += lut.back().arc;
-
-        // Use the bad (red) material for the last segment when the curve is too sharp.
-        Material& mat = (s_curve_too_sharp && seg == n - 2) ? s_ghost_material_bad : s_ghost_material;
-        for (const Matrix& m : BuildSegmentInstances(pts, seg))
-            for (int mi = 0; mi < s_model.meshCount; mi++)
-                DrawMesh(s_model.meshes[mi], mat, m);
-    }
-
-    for (const Vector3& a : anchors)
-        DrawSphere(a, 0.25f, COL_ACCENT);
-
-    // Draw auto-inserted arc anchors (pts entries beyond the user-placed anchors, excluding cursor).
-    for (int i = (int)anchors.size(); i < (int)pts.size() - 1; i++)
-        DrawSphere(pts[i], 0.2f, COL_JUNCTION);
-
-    DrawSphere(cursor, 0.3f, YELLOW);
 }
 
 // ---------------------------------------------------------------------------
@@ -399,386 +186,327 @@ static void DrawGhostCurve(const std::vector<Vector3>& anchors, Vector3 cursor) 
 // ---------------------------------------------------------------------------
 
 void TrackSystemInit() {
-    s_model = LoadModel("resources/kenny/kenney_train-kit/Models/GLB format/track-single.glb");
+    TrackGeomInit();
 
-    if (s_model.meshCount == 0) {
-        TraceLog(LOG_WARNING, "TRACK: failed to load spline-segment.glb");
-        return;
-    }
-    s_model_loaded = true;
+    // Load only assets that currently exist; missing slots are skipped at draw time.
+    static const char *mesh_paths[NUM_MESHES] = {
+        "assets/track-straight-s.glb",  // 0 — available
+        nullptr,                         // 1 — STRAIGHT_L, pending
+        nullptr,                         // 2 — CURVE_R1_15, pending
+        nullptr,                         // 3 — CURVE_R2_15, pending
+        "assets/track-curve-r2-30.glb", // 4 — CURVE_R2_30
+    };
 
-    // Replace every material with a flat-colour default so palette colours render
-    // without being modulated by the GLB's embedded textures.
-    // Material 0 is assumed to be the ballast/base; anything else is the rail.
-    for (int i = 0; i < s_model.materialCount; i++) {
-        Material mat = LoadMaterialDefault();
-        mat.maps[MATERIAL_MAP_DIFFUSE].color = (i == 0) ? COL_TRACK: COL_TRACK_BALLAST;
-        s_model.materials[i] = mat;
-    }
-
-    s_ghost_material = LoadMaterialDefault();
-    s_ghost_material.maps[MATERIAL_MAP_DIFFUSE].color = COL_TRACK_GHOST;
-
-    s_ghost_material_bad = LoadMaterialDefault();
-    s_ghost_material_bad.maps[MATERIAL_MAP_DIFFUSE].color = COL_TRACK_GHOST_BAD;
-
-    // Determine the model's forward axis and tile length from its bounding box.
-    // The longest horizontal extent (X or Z) is treated as the track direction.
-    BoundingBox bb = GetModelBoundingBox(s_model);
-    Vector3     sz = Vector3Subtract(bb.max, bb.min);
-    if (sz.z >= sz.x) {
-        s_model_forward = {0, 0, 1};
-        s_model_length  = sz.z;
-    } else {
-        s_model_forward = {1, 0, 0};
-        s_model_length  = sz.x;
+    for (int i = 0; i < NUM_MESHES; i++) {
+        s_mesh_ok[i] = false;
+        if (!mesh_paths[i]) continue;
+        s_meshes[i]  = LoadModel(mesh_paths[i]);
+        s_mesh_ok[i] = (s_meshes[i].meshCount > 0);
+        if (!s_mesh_ok[i])
+            TraceLog(LOG_WARNING, "TRACK: failed to load %s", mesh_paths[i]);
     }
 
-    TraceLog(LOG_INFO, "TRACK: model loaded — forward %s, length %.3f",
-             (s_model_forward.z > 0.5f ? "+Z" : "+X"), s_model_length);
+    s_mat_track = LoadMaterialDefault();
+    s_mat_track.maps[MATERIAL_MAP_DIFFUSE].color = COL_TRACK;
+
+    s_mat_ghost = LoadMaterialDefault();
+    s_mat_ghost.maps[MATERIAL_MAP_DIFFUSE].color = COL_TRACK_GHOST;
+
+    s_mat_ghost_bad = LoadMaterialDefault();
+    s_mat_ghost_bad.maps[MATERIAL_MAP_DIFFUSE].color = COL_TRACK_GHOST_BAD;
 }
 
 void TrackSystemUpdate() {
-    // Activate placement when the Track button event arrives from the previous frame
     if (gs.events.has(EVENT_START_TRACK_EDIT)) {
-        gs.app.track_editing  = true;
-        gs.app.erase_editing  = false;
-        s_place.anchors.clear();
-        s_place.drag_idx      = -1;
-        s_place.has_entry_dir = false;
-        s_edit_line_idx       = -1;
-        s_edit_anchor_idx     = -1;
+        gs.app.track_editing = true;
+        gs.app.erase_editing = false;
+        s_place          = {};
+        s_heading_offset = 0.0f;
     }
-
     if (gs.events.has(EVENT_START_ERASE_EDIT)) {
-        gs.app.erase_editing  = true;
-        gs.app.track_editing  = false;
-        s_erase_dragging      = false;
+        gs.app.erase_editing = true;
+        gs.app.track_editing = false;
+        s_erase_drag         = false;
+        s_place              = {};
     }
 
     if (!gs.app.track_editing && !gs.app.erase_editing) return;
 
-    // ---------------------------------------------------------------------------
-    // Erase mode — marquee selection and deletion
-    // ---------------------------------------------------------------------------
+    // --- Erase mode ---
     if (gs.app.erase_editing) {
         if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-            s_erase_start    = GetMousePosition();
-            s_erase_end      = s_erase_start;
-            s_erase_dragging = true;
+            s_erase_start = s_erase_end = GetMousePosition();
+            s_erase_drag  = true;
         }
-        if (s_erase_dragging && IsMouseButtonDown(MOUSE_LEFT_BUTTON))
+        if (s_erase_drag && IsMouseButtonDown(MOUSE_LEFT_BUTTON))
             s_erase_end = GetMousePosition();
 
-        if (s_erase_dragging && IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
-            s_erase_dragging = false;
-            // Build a normalised screen-space rectangle from the drag corners.
-            Rectangle marquee = {
+        if (s_erase_drag && IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
+            s_erase_drag = false;
+            Rectangle r = {
                 fminf(s_erase_start.x, s_erase_end.x),
                 fminf(s_erase_start.y, s_erase_end.y),
                 fabsf(s_erase_end.x - s_erase_start.x),
                 fabsf(s_erase_end.y - s_erase_start.y),
             };
-            // Remove every anchor that projects inside the marquee; erase lines
-            // that fall below two anchors as they can no longer form a segment.
-            for (int li = (int)s_lines.size() - 1; li >= 0; li--) {
-                auto& anchors = s_lines[li].anchors;
-                for (int ai = (int)anchors.size() - 1; ai >= 0; ai--) {
-                    Vector2 sp = GetWorldToScreen(anchors[ai], gs.camera.cam);
-                    if (CheckCollisionPointRec(sp, marquee))
-                        anchors.erase(anchors.begin() + ai);
-                }
-                if ((int)anchors.size() < 2)
-                    s_lines.erase(s_lines.begin() + li);
-                else
-                    RebuildLineInstances(s_lines[li]);
+            for (int i = (int)s_tiles.size() - 1; i >= 0; i--) {
+                Vector2 sp = GetWorldToScreen(s_tiles[i].eps[0].pos, gs.camera.cam);
+                if (CheckCollisionPointRec(sp, r))
+                    RemoveTile(i);
             }
+            RebuildInstanceBuffers();
         }
-
         if (IsMouseButtonPressed(MOUSE_RIGHT_BUTTON) || IsKeyPressed(KEY_ESCAPE)) {
-            s_erase_dragging     = false;
+            s_erase_drag         = false;
             gs.app.erase_editing = false;
         }
-        return; // erase mode handled; skip track-placement logic below
+        return;
     }
 
-    float snap   = IsKeyDown(KEY_LEFT_SHIFT) ? 0.0f : s_place.snap_size;
-    s_has_cursor = GroundPos(&s_cursor, snap);
+    // --- Track placement mode ---
+    s_has_cursor = GroundPos(&s_cursor);
     if (!s_has_cursor) return;
 
-    // Derive the incoming direction at the last placed anchor.
-    // Falls back to the committed-track entry direction when only one anchor has been placed
-    // so that curve checks and auto-arc insertion work correctly when continuing from existing track.
-    bool    has_v1 = false;
-    Vector3 v1_dir = {};
-    Vector3 v1_prev = {}; // virtual "previous" point used by ArcMidpoint (last - v1_dir)
-    if (s_place.anchors.size() >= 2) {
-        Vector3 prev = s_place.anchors[s_place.anchors.size() - 2];
-        Vector3 last = s_place.anchors.back();
-        v1_dir  = Vector3Normalize(Vector3Subtract(last, prev));
-        v1_prev = prev;
-        has_v1  = true;
-    } else if (s_place.anchors.size() == 1 && s_place.has_entry_dir) {
-        v1_dir  = s_place.entry_dir;
-        // Synthesise a virtual previous point one unit behind the first anchor.
-        v1_prev = Vector3Subtract(s_place.anchors[0], v1_dir);
-        has_v1  = true;
-    }
+    // Grid snap.
+    s_cursor.x = roundf(s_cursor.x / GRID_CELL) * GRID_CELL;
+    s_cursor.z = roundf(s_cursor.z / GRID_CELL) * GRID_CELL;
 
-    // Turn-angle check: block placements that deflect more than 45° at the last anchor.
-    s_curve_too_sharp = false;
-    if (has_v1 && !s_place.anchors.empty()) {
-        Vector3 v2 = Vector3Normalize(Vector3Subtract(s_cursor, s_place.anchors.back()));
-        s_curve_too_sharp = (Vector3DotProduct(v1_dir, v2) < MAX_TURN_COS);
-    }
-
-    // Anchor snap: if cursor is near any anchor on any committed track, lock to it.
-    // Record the line/anchor indices so the placement code can derive entry_dir.
-    s_has_snap_ep = false;
-    s_snap_line   = -1;
-    s_snap_anchor = -1;
-    for (int li = 0; li < (int)s_lines.size(); li++) {
-        for (int ai = 0; ai < (int)s_lines[li].anchors.size(); ai++) {
-            if (Vector3Distance(s_cursor, s_lines[li].anchors[ai]) < SNAP_EP_RADIUS) {
-                s_cursor      = s_lines[li].anchors[ai];
-                s_has_snap_ep = true;
-                s_snap_line   = li;
-                s_snap_anchor = ai;
+    // Endpoint snap (overrides grid snap).
+    // Snaps to any endpoint not yet in a junction — both open endpoints (for direct
+    // linking) and directly-linked endpoints (for junction upgrade).
+    s_cursor_snapped = false;
+    s_snap_tile      = TILE_NO_LINK;
+    s_snap_ep        = TILE_NO_LINK;
+    for (int ti = 0; ti < (int)s_tiles.size(); ti++) {
+        for (int ep = 0; ep < s_tiles[ti].ep_count; ep++) {
+            if (s_tiles[ti].eps[ep].linked_junction != TILE_NO_LINK) continue;
+            if (Vector3Distance(s_cursor, s_tiles[ti].eps[ep].pos) < SNAP_EP_R) {
+                s_cursor         = s_tiles[ti].eps[ep].pos;
+                s_cursor_snapped = true;
+                s_snap_tile      = ti;
+                s_snap_ep        = ep;
                 break;
             }
         }
-        if (s_has_snap_ep) break;
+        if (s_cursor_snapped) break;
     }
 
-    // Axis-alignment guides: flag X/Z when cursor shares a coordinate with any anchor.
-    s_has_guide_x = false;
-    s_has_guide_z = false;
-    auto check_align = [&](Vector3 a) {
-        if (fabsf(a.x - s_cursor.x) < ALIGN_EPSILON) { s_has_guide_x = true; s_guide_x = s_cursor.x; }
-        if (fabsf(a.z - s_cursor.z) < ALIGN_EPSILON) { s_has_guide_z = true; s_guide_z = s_cursor.z; }
+    // T cycles tile type; R / Shift+R rotates placement heading in 15° / 45° steps.
+    if (IsKeyPressed(KEY_T))
+        s_dbg_tile = (TileType)((s_dbg_tile + 1) % TILE_TYPE_COUNT);
+    if (IsKeyPressed(KEY_R)) {
+        float step = (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT))
+                     ? DEG45 : DEG15;
+        s_heading_offset = NormAngle(s_heading_offset + step);
+    }
+
+    // Returns the natural continuation heading when snapping to an open endpoint:
+    // ep[1] (exit end) → continue forward; ep[0] (entry end) → extend backward.
+    auto SnapHeading = [&](int tile, int ep) -> float {
+        float eh = s_tiles[tile].eps[ep].heading;
+        return (ep == 0) ? NormAngle(eh + (float)M_PI) : eh;
     };
-    for (TrackLine& line : s_lines)
-        for (Vector3 a : line.anchors) check_align(a);
-    for (Vector3 a : s_place.anchors) check_align(a);
 
-    if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-        int hit = HitAnchor(s_place.anchors);
-        if (hit >= 0) {
-            // Drag an in-progress placement anchor.
-            s_place.drag_idx = hit;
-        } else {
-            int li, ai;
-            if (s_place.anchors.empty() && HitCommittedAnchor(&li, &ai)) {
-                // Mouse down on a committed anchor with no placement in progress.
-                // Defer decision: movement → drag/reposition; quick release → start placement from here.
-                s_pending_edit        = true;
-                s_pending_edit_line   = li;
-                s_pending_edit_anchor = ai;
-                s_pending_edit_origin = GetMousePosition();
-            } else if (!s_curve_too_sharp) {
-                // Add a new placement anchor (with optional auto arc-midpoint insertion).
-                if (has_v1 && !s_place.anchors.empty()) {
-                    Vector3 last = s_place.anchors.back();
-                    Vector3 v2   = Vector3Normalize(Vector3Subtract(s_cursor, last));
-                    if (Vector3DotProduct(v1_dir, v2) < ARC_SUBDIVIDE_COS)
-                        s_place.anchors.push_back(ArcMidpoint(v1_prev, last, s_cursor));
-                }
-                // First anchor at a snap point: record the committed track's direction as context.
-                if (s_place.anchors.empty() && s_has_snap_ep && s_snap_line >= 0) {
-                    auto& la = s_lines[s_snap_line].anchors;
-                    int   si = s_snap_anchor, n = (int)la.size();
-                    if (si == 0)
-                        s_place.entry_dir = Vector3Normalize(Vector3Subtract(la[0], la[1]));
-                    else if (si < n - 1)
-                        s_place.entry_dir = Vector3Normalize(Vector3Subtract(la[si + 1], la[si]));
-                    else
-                        s_place.entry_dir = Vector3Normalize(Vector3Subtract(la[si], la[si - 1]));
-                    s_place.has_entry_dir = true;
-                }
-                s_place.anchors.push_back(s_cursor);
-            }
-        }
+    // Build ghost tile — always follows the cursor (grid/endpoint snap applied above).
+    // Chaining works naturally: the placed tile's exit becomes an open endpoint that
+    // the cursor snaps to on the next frame, aligning the next ghost automatically.
+    s_ghost.clear();
+    s_ghost_invalid = false;
+    {
+        float base_heading  = s_cursor_snapped ? SnapHeading(s_snap_tile, s_snap_ep) : 0.0f;
+        float ghost_heading = NormAngle(base_heading + s_heading_offset);
+
+        GhostTile gt;
+        gt.type  = s_dbg_tile;
+        gt.world = TileMatrix(s_cursor, ghost_heading);
+        if (IsLeftCurve(s_dbg_tile)) gt.world = MirrorX(gt.world);
+        s_ghost.push_back(gt);
+
+        Vector3 ghost_exit; float ghost_exit_h;
+        WalkTile(s_dbg_tile, s_cursor, ghost_heading, &ghost_exit, &ghost_exit_h);
+        if (GhostCollides(s_cursor, ghost_exit))
+            s_ghost_invalid = true;
     }
 
-    // Resolve pending committed-anchor action: drag if mouse moved, place-from-here if released.
-    if (s_pending_edit) {
-        if (IsMouseButtonDown(MOUSE_LEFT_BUTTON)) {
-            if (Vector2Distance(GetMousePosition(), s_pending_edit_origin) > DRAG_THRESHOLD_PX) {
-                s_edit_line_idx       = s_pending_edit_line;
-                s_edit_anchor_idx     = s_pending_edit_anchor;
-                s_pending_edit        = false;
-            }
-        } else {
-            // Released without significant movement — start placement from this committed anchor.
-            auto& la = s_lines[s_pending_edit_line].anchors;
-            int   si = s_pending_edit_anchor, n = (int)la.size();
-            if (si == 0)
-                s_place.entry_dir = Vector3Normalize(Vector3Subtract(la[0], la[1]));
-            else if (si < n - 1)
-                s_place.entry_dir = Vector3Normalize(Vector3Subtract(la[si + 1], la[si]));
-            else
-                s_place.entry_dir = Vector3Normalize(Vector3Subtract(la[si], la[si - 1]));
-            s_place.has_entry_dir = true;
-            s_place.anchors.push_back(la[si]);
-            s_pending_edit = false;
-        }
+    // Left-click: place tile at cursor (snapped position when applicable).
+    if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) && !s_ghost_invalid) {
+        float base_h = s_cursor_snapped ? SnapHeading(s_snap_tile, s_snap_ep) : 0.0f;
+        float ph     = NormAngle(base_h + s_heading_offset);
+        PlaceTile(s_dbg_tile, s_cursor, ph, s_place.dir);
+        s_heading_offset = 0.0f; // reset so next tile continues naturally from snap direction
+        RebuildInstanceBuffers();
     }
 
-    if (s_place.drag_idx >= 0 && IsMouseButtonDown(MOUSE_LEFT_BUTTON))
-        s_place.anchors[s_place.drag_idx] = s_cursor;
-
-    if (s_edit_line_idx >= 0 && IsMouseButtonDown(MOUSE_LEFT_BUTTON)) {
-        s_lines[s_edit_line_idx].anchors[s_edit_anchor_idx] = s_cursor;
-        RebuildLineInstances(s_lines[s_edit_line_idx]);
+    // Right-click / ESC: exit placement.
+    if (IsMouseButtonPressed(MOUSE_RIGHT_BUTTON) || IsKeyPressed(KEY_ESCAPE)) {
+        s_place              = {};
+        gs.app.track_editing = false;
+        s_ghost.clear();
     }
 
-    if (IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
-        s_place.drag_idx  = -1;
-        s_edit_line_idx   = -1;
-        s_edit_anchor_idx = -1;
-    }
-
-    if (IsMouseButtonPressed(MOUSE_RIGHT_BUTTON)) {
-        int li, ai;
-        if (HitCommittedAnchor(&li, &ai)) {
-            // Right-click on a committed anchor: remove it.
-            // If the line drops below 2 anchors it can no longer form a segment, so remove it entirely.
-            TrackLine& line = s_lines[li];
-            line.anchors.erase(line.anchors.begin() + ai);
-            if ((int)line.anchors.size() < 2) {
-                s_lines.erase(s_lines.begin() + li);
-            } else {
-                RebuildLineInstances(line);
-            }
-            // Clear edit / pending state in case the deleted anchor was selected.
-            s_pending_edit    = false;
-            s_edit_line_idx   = -1;
-            s_edit_anchor_idx = -1;
-        } else {
-            // Right-click on empty space: commit in-progress anchors and exit placement mode.
-            CommitPlacement();
-            s_place.anchors.clear();
-            s_place.drag_idx      = -1;
-            s_place.has_entry_dir = false;
-            s_edit_line_idx       = -1;
-            s_edit_anchor_idx     = -1;
-            gs.app.track_editing  = false;
-        }
-    }
-
-    if (IsKeyPressed(KEY_BACKSPACE) && !s_place.anchors.empty())
-        s_place.anchors.pop_back();
-
-    // ESC: cancel without committing; UiUpdate skips its ESC handler while track_editing is true
-    if (IsKeyPressed(KEY_ESCAPE)) {
-        s_place.anchors.clear();
-        s_place.drag_idx      = -1;
-        s_place.has_entry_dir = false;
-        s_pending_edit        = false;
-        s_edit_line_idx       = -1;
-        s_edit_anchor_idx     = -1;
-        gs.app.track_editing  = false;
+    // D: cycle direction constraint.
+    if (IsKeyPressed(KEY_D)) {
+        if      (s_place.dir == ARC_DIR_BOTH)   s_place.dir = ARC_DIR_A_TO_B;
+        else if (s_place.dir == ARC_DIR_A_TO_B) s_place.dir = ARC_DIR_B_TO_A;
+        else                                     s_place.dir = ARC_DIR_BOTH;
     }
 }
 
 void TrackSystemDraw3D() {
-    if (s_model_loaded) {
-        for (TrackLine& line : s_lines) {
-            for (std::vector<Matrix>& seg_inst : line.instances) {
-                for (const Matrix& m : seg_inst) {
-                    for (int mi = 0; mi < s_model.meshCount; mi++)
-                        DrawMesh(s_model.meshes[mi],
-                                 s_model.materials[s_model.meshMaterial[mi]],
-                                 m);
-                }
-            }
-        }
+    for (const PlacedTile& tile : s_tiles) {
+        int mi = MESH_IDX[tile.type];
+        if (!s_mesh_ok[mi]) continue;
+        Model& m = s_meshes[mi];
+        for (int msh = 0; msh < m.meshCount; msh++)
+            DrawMesh(m.meshes[msh], m.materials[m.meshMaterial[msh]], tile.world);
     }
 
+    // Open endpoints — shown in both editing modes.
     if (gs.app.track_editing || gs.app.erase_editing) {
-        // Draw all committed anchors; in track mode highlight the one being dragged.
-        for (int li = 0; li < (int)s_lines.size(); li++) {
-            for (int ai = 0; ai < (int)s_lines[li].anchors.size(); ai++) {
-                bool selected = (li == s_edit_line_idx && ai == s_edit_anchor_idx);
-                DrawSphere(s_lines[li].anchors[ai],
-                           selected ? 0.35f : 0.2f,
-                           selected ? COL_ACCENT : COL_SNAP_ENDPOINT);
-            }
-        }
+        for (const PlacedTile& tile : s_tiles)
+            for (int ep = 0; ep < tile.ep_count; ep++)
+                if (tile.eps[ep].linked_tile == TILE_NO_LINK)
+                    DrawSphere(tile.eps[ep].pos, 0.3f, COL_SNAP_ENDPOINT);
     }
+
+    if (gs.app.track_editing && s_has_cursor)
+        DrawSphere(s_cursor, 0.2f, COL_SNAP_ENDPOINT);
 
     if (gs.app.track_editing && s_has_cursor) {
-        // Axis-alignment guide lines — raised 1 cm to avoid Z-fighting with the ground.
-        if (s_has_guide_x)
-            DrawLine3D({s_guide_x, 0.01f, -GUIDE_HALF_LEN},
-                       {s_guide_x, 0.01f,  GUIDE_HALF_LEN}, COL_SNAP_DOT);
-        if (s_has_guide_z)
-            DrawLine3D({-GUIDE_HALF_LEN, 0.01f, s_guide_z},
-                       { GUIDE_HALF_LEN, 0.01f, s_guide_z}, COL_SNAP_DOT);
+        for (const GhostTile& g : s_ghost) {
+            int mi = MESH_IDX[g.type];
+            if (!s_mesh_ok[mi]) continue;
+            Material& mat = s_ghost_invalid ? s_mat_ghost_bad : s_mat_ghost;
+            Model& m = s_meshes[mi];
+            for (int msh = 0; msh < m.meshCount; msh++)
+                DrawMesh(m.meshes[msh], mat, g.world);
+        }
 
-        // Endpoint snap ring drawn around the locked position.
-        if (s_has_snap_ep)
-            DrawCircle3D(s_cursor, 0.5f, {1, 0, 0}, 90.0f, COL_SNAP_ENDPOINT);
+        if (s_cursor_snapped)
+            DrawCircle3D(s_cursor, 0.6f, {1,0,0}, 90.0f, COL_SNAP_ENDPOINT);
 
-        DrawGhostCurve(s_place.anchors, s_cursor);
     }
 }
 
 void TrackSystemDraw2D() {
-    if (gs.app.erase_editing && s_erase_dragging) {
-        // Draw the live marquee rectangle: translucent fill + solid border.
-        Rectangle marquee = {
+    if (gs.app.erase_editing && s_erase_drag) {
+        Rectangle r = {
             fminf(s_erase_start.x, s_erase_end.x),
             fminf(s_erase_start.y, s_erase_end.y),
             fabsf(s_erase_end.x - s_erase_start.x),
             fabsf(s_erase_end.y - s_erase_start.y),
         };
-        DrawRectangleRec(marquee, Color{220, 60, 60, 40});
-        DrawRectangleLinesEx(marquee, 1.5f, Color{220, 60, 60, 200});
+        DrawRectangleRec(r, Color{220, 60, 60, 40});
+        DrawRectangleLinesEx(r, 1.5f, Color{220, 60, 60, 200});
     }
 
-    if (!gs.app.track_editing || !s_has_cursor || s_place.anchors.empty()) return;
+    if (!gs.app.track_editing || !s_has_cursor) return;
 
-    // Project cursor to screen and draw total ghost arc length (or a curve warning) next to it.
-    Vector2 screen = GetWorldToScreen(s_cursor, gs.camera.cam);
-    if (s_curve_too_sharp)
-        DrawText("Too sharp!", (int)screen.x + 14, (int)screen.y - 10, 24, RED);
-    else
-        DrawText(TextFormat("%.1f m", s_ghost_length),
-                 (int)screen.x + 14, (int)screen.y - 10, 24, COL_ACCENT);
+    Vector2 sc = GetWorldToScreen(s_cursor, gs.camera.cam);
+    DrawText(TextFormat("[T] %s", TILE_NAMES[s_dbg_tile]),
+             (int)sc.x + 14, (int)sc.y - 10, 20, COL_ACCENT);
 }
 
 void TrackSystemDestroy() {
-    if (s_model_loaded) UnloadModel(s_model);
-    s_lines.clear();
+    for (int i = 0; i < NUM_MESHES; i++)
+        if (s_mesh_ok[i]) UnloadModel(s_meshes[i]);
+    s_tiles.clear();
+    s_junctions.clear();
+    s_ghost.clear();
 }
 
+// ---------------------------------------------------------------------------
+// Save / Load
+// ---------------------------------------------------------------------------
+
 void TrackSystemSave(FILE *f) {
-    fprintf(f, "TRACKS %d\n", (int)s_lines.size());
-    for (const TrackLine& line : s_lines) {
-        fprintf(f, "LINE %d\n", (int)line.anchors.size());
-        for (const Vector3& a : line.anchors)
-            fprintf(f, "%.6f %.6f %.6f\n", a.x, a.y, a.z);
+    fprintf(f, "TILES %d\n", (int)s_tiles.size());
+    for (const PlacedTile& t : s_tiles) {
+        const Matrix& m = t.world;
+        fprintf(f, "%s %d  "
+                "%.6f %.6f %.6f %.6f  %.6f %.6f %.6f %.6f  "
+                "%.6f %.6f %.6f %.6f  %.6f %.6f %.6f %.6f\n",
+                TILE_NAMES[t.type], (int)t.direction,
+                m.m0,  m.m1,  m.m2,  m.m3,
+                m.m4,  m.m5,  m.m6,  m.m7,
+                m.m8,  m.m9,  m.m10, m.m11,
+                m.m12, m.m13, m.m14, m.m15);
     }
+    // Save junction thrown states; topology is reconstructed from tiles on load.
+    fprintf(f, "JUNCTIONS %d\n", (int)s_junctions.size());
+    for (const JunctionNode& jn : s_junctions)
+        fprintf(f, "%.6f %.6f %.6f %d\n", jn.pos.x, jn.pos.y, jn.pos.z, jn.thrown);
 }
 
 void TrackSystemLoad(FILE *f) {
-    s_lines.clear();
-    int n_lines = 0;
-    if (fscanf(f, " TRACKS %d", &n_lines) != 1) return;
-    for (int i = 0; i < n_lines; i++) {
-        int n_anchors = 0;
-        if (fscanf(f, " LINE %d", &n_anchors) != 1) return;
-        TrackLine line;
-        line.anchors.reserve(n_anchors);
-        for (int j = 0; j < n_anchors; j++) {
-            Vector3 a = {};
-            if (fscanf(f, " %f %f %f", &a.x, &a.y, &a.z) != 3) return;
-            line.anchors.push_back(a);
+    s_tiles.clear();
+    s_junctions.clear();
+    s_ghost.clear();
+
+    int n = 0;
+    if (fscanf(f, " TILES %d", &n) != 1) return;
+
+    for (int i = 0; i < n; i++) {
+        char name[32];
+        int  dir_i;
+        Matrix m;
+        if (fscanf(f, " %31s %d  "
+                   "%f %f %f %f  %f %f %f %f  "
+                   "%f %f %f %f  %f %f %f %f",
+                   name, &dir_i,
+                   &m.m0,  &m.m1,  &m.m2,  &m.m3,
+                   &m.m4,  &m.m5,  &m.m6,  &m.m7,
+                   &m.m8,  &m.m9,  &m.m10, &m.m11,
+                   &m.m12, &m.m13, &m.m14, &m.m15) != 18) {
+            TraceLog(LOG_ERROR, "TRACK: parse error at tile %d", i);
+            break;
         }
-        if ((int)line.anchors.size() >= 2)
-            RebuildLineInstances(line);
-        s_lines.push_back(std::move(line));
+
+        TileType type = TILE_STRAIGHT_S;
+        for (int t = 0; t < TILE_TYPE_COUNT; t++)
+            if (strcmp(name, TILE_NAMES[t]) == 0) { type = (TileType)t; break; }
+
+        PlacedTile tile;
+        tile.type      = type;
+        tile.direction = (ArcDirection)dir_i;
+        tile.world     = m;
+        tile.ep_count  = 2;
+
+        // Recover placement position and heading from the stored world matrix.
+        // Translation is in column 3; heading from atan2(sin, cos) in Ry columns.
+        Vector3 pos     = { m.m12, m.m13, m.m14 };
+        float   heading = atan2f(m.m8, m.m0);
+
+        tile.eps[0].pos             = pos;
+        tile.eps[0].heading         = heading;
+        tile.eps[0].linked_tile     = TILE_NO_LINK;
+        tile.eps[0].linked_ep       = TILE_NO_LINK;
+        tile.eps[0].linked_junction = TILE_NO_LINK;
+
+        Vector3 np; float nh;
+        WalkTile(type, pos, heading, &np, &nh);
+        tile.eps[1].pos             = np;
+        tile.eps[1].heading         = nh;
+        tile.eps[1].linked_tile     = TILE_NO_LINK;
+        tile.eps[1].linked_ep       = TILE_NO_LINK;
+        tile.eps[1].linked_junction = TILE_NO_LINK;
+
+        s_tiles.push_back(tile);
+    }
+
+    for (int i = 0; i < (int)s_tiles.size(); i++)
+        AutoLink(i);
+
+    RebuildInstanceBuffers();
+
+    // Apply saved junction thrown states (topology was rebuilt by AutoLink above).
+    int njunc = 0;
+    if (fscanf(f, " JUNCTIONS %d", &njunc) == 1) {
+        for (int i = 0; i < njunc; i++) {
+            Vector3 pos; int thrown;
+            if (fscanf(f, " %f %f %f %d", &pos.x, &pos.y, &pos.z, &thrown) != 4) break;
+            for (JunctionNode& jn : s_junctions)
+                if (Vector3Distance(jn.pos, pos) < SNAP_EP_R) { jn.thrown = thrown; break; }
+        }
     }
 }
-

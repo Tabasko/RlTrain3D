@@ -4,7 +4,7 @@ CXXFLAGS_DBG = -Wall -Wextra -O0 -g3 -std=c++17 -Isrc -MMD -MP
 LIBS         = $(shell pkg-config --libs --cflags raylib) -lm
 TARGET       = train3d
 TARGET_DBG   = train3d_dbg
-SRC          = $(wildcard src/*.cpp) $(wildcard src/**/*.cpp)
+SRC          = $(shell find src -name '*.cpp')
 OBJ          = $(patsubst src/%.cpp, build/%.o,     $(SRC))
 OBJ_DBG      = $(patsubst src/%.cpp, build/dbg/%.o, $(SRC))
 DEP          = $(OBJ:.o=.d)

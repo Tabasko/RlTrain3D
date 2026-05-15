@@ -1,6 +1,6 @@
 #include "raylib.h"
 #include "raymath.h"
-#include "rpg_controller.hpp"
+#include "camera.hpp"
 #include <math.h>
 
 RPGCamera::RPGCamera() {

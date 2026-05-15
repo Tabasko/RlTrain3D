@@ -1,5 +1,5 @@
 #pragma once
-#include "../rpg_controller.hpp"
+#include "../camera.hpp"
 #include "../events/event_bus.h"
 
 typedef struct {
@@ -22,7 +22,7 @@ typedef struct {
 } UiState;
 
 typedef struct {
-    RPGCamera  camera;
+    RPGCamera camera;
     UiState    ui;
     AppState   app;
     EventBus   events;

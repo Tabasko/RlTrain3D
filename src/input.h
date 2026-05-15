@@ -1,4 +1,5 @@
 #pragma once
+#include "camera.hpp"
 #include "state/game_state.h"
 #include "types.h"
 
