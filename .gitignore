@@ -1,0 +1,8 @@
+bin/*
+build
+train3d
+resources/kenny/kenney_city-kit-industrial_1.0/*
+resources/kenny/kenney_light-masks-1.0/*
+resources/kenny/kenney_particle-pack/*
+resources/kenny/kenney_train-kit/*
+resources/kenny/kenny_pattern_pack/*

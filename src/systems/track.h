@@ -1,5 +1,6 @@
 #pragma once
 #include "raylib.h"
+#include <stdio.h>
 #include <vector>
 
 // A sampled point on a committed arc — returned by TrackFindNearestArc.
@@ -28,7 +29,9 @@ void TrackSystemDraw2D();
 // Release all GPU resources.
 void TrackSystemDestroy();
 
-// Returns the shared track tile model (valid until TrackSystemDestroy).
-const Model* TrackGetModel();
-Vector3      TrackGetModelForward();
-float        TrackGetModelLength();
+// Serialize all committed track lines (anchors only) to an open file.
+void TrackSystemSave(FILE *f);
+
+// Replace all committed track lines from an open file; rebuilds instance matrices.
+void TrackSystemLoad(FILE *f);
+

@@ -27,6 +27,7 @@ bool UiMouseInPanel(void) {
 
 void UiDraw(void) {
     UiDrawToolbar();
+    UiDrawRightPanel();
     if (gs.app.render_ui_left_panel)
         UiDrawLeftPanel();
 }
@@ -76,6 +77,33 @@ void UiDrawLeftPanel(void) {
     }
 }
 
+void UiDrawRightPanel(void) {
+    int sw    = GetScreenWidth();
+    int sh    = GetScreenHeight();
+    int btn_w = PANEL_W - 2 * PANEL_PAD;
+    int panel_x = sw - PANEL_W;
+
+    // DrawRectangle(panel_x, TOOLBAR_H, PANEL_W, sh - TOOLBAR_H, Color{14, 20, 40, 220});
+    // DrawLineEx(Vector2{(float)panel_x, (float)TOOLBAR_H}, Vector2{(float)panel_x, (float)sh},
+    //            1.0f, Color{40, 65, 105, 200});
+
+    static const struct { int icon; const char *label; } tools[] = {
+        { ICON_FILE_OPEN, "Load" },
+        { ICON_FILE_SAVE, "Save" },
+    };
+    static const int tool_count = sizeof(tools) / sizeof(tools[0]);
+
+    int y = TOOLBAR_H + PANEL_PAD + PANEL_PAD;
+    for (int i = 0; i < tool_count; i++) {
+        Rectangle rect = { (float)(panel_x + PANEL_PAD), (float)y, (float)btn_w, (float)PANEL_ITEM_H };
+        if (GuiButton(rect, GuiIconText(tools[i].icon, tools[i].label))) {
+            if (i == 0) gs.events.emit(EVENT_FILE_OPEN);
+            if (i == 1) gs.events.emit(EVENT_FILE_SAVE);
+        }
+        y += PANEL_ITEM_H + PANEL_PAD / 2;
+    }
+}
+
 
 // ---------------------------------------------------------------------------
 // Confirmation panel
@@ -94,56 +122,6 @@ void UI_ShowConfirm(const char *title, const char *message,
 
     for (int i = 0; i < _panel.buttonCount; i++)
         _panel.buttons[i] = buttonDefs[i];
-}
-
-
-void UiDraw_old(void) {
-    if (!_panel.active) return;
-
-    int sw = GetScreenWidth();
-    int sh = GetScreenHeight();
-
-    int panelW = 420, panelH = 200;
-    int panelX = (sw - panelW) / 2;
-    int panelY = (sh - panelH) / 2;
-
-    int btnW      = 110, btnH = 36;
-    int btnSpacing = 12;
-    int totalBtnW  = _panel.buttonCount * btnW + (_panel.buttonCount - 1) * btnSpacing;
-    int btnStartX  = panelX + (panelW - totalBtnW) / 2;
-    int btnY       = panelY + panelH - btnH - 20;
-
-    Vector2 mouse = GetMousePosition();
-
-    DrawRectangle(0, 0, sw, sh, Color{0, 0, 0, 120});
-    DrawRectangleRounded(Rectangle{(float)panelX, (float)panelY, (float)panelW, (float)panelH},
-                         0.1f, 8, Color{30, 30, 40, 255});
-    DrawRectangleRoundedLines(Rectangle{(float)panelX, (float)panelY, (float)panelW, (float)panelH},
-                               0.1f, 8, Color{80, 80, 100, 255});
-
-    DrawText(_panel.title,   panelX + 20, panelY + 18, 20, WHITE);
-    DrawLine(panelX + 10, panelY + 48, panelX + panelW - 10, panelY + 48, Color{80, 80, 100, 255});
-    DrawText(_panel.message, panelX + 20, panelY + 62, 16, Color{200, 200, 210, 255});
-
-    for (int i = 0; i < _panel.buttonCount; i++) {
-        int bx = btnStartX + i * (btnW + btnSpacing);
-        Rectangle btnRect = {(float)bx, (float)btnY, (float)btnW, (float)btnH};
-        bool hovered = CheckCollisionPointRec(mouse, btnRect);
-
-        Color col = hovered ? _panel.buttons[i].hoverColor : _panel.buttons[i].color;
-        DrawRectangleRounded(btnRect, 0.2f, 6, col);
-        DrawRectangleRoundedLines(btnRect, 0.2f, 6, Color{255, 255, 255, 40});
-
-        int txtW = MeasureText(_panel.buttons[i].label, 16);
-        DrawText(_panel.buttons[i].label,
-                 bx + (btnW - txtW) / 2, btnY + (btnH - 16) / 2,
-                 16, WHITE);
-
-        if (hovered && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-            _panel.result = i;
-            _panel.active = false;
-        }
-    }
 }
 
 int  UI_GetResult(void) { return _panel.result; }

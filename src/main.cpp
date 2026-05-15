@@ -3,6 +3,8 @@
 #include "state/game_state.h"
 #include "systems/environment.h"
 #include "systems/junction.h"
+#include "systems/props.h"
+#include "systems/saveload.h"
 #include "systems/track.h"
 #include "colors.h"
 #include "ui/ui.h"
@@ -27,6 +29,7 @@ int main(void) {
   GameStateInit();
   Vector3 player = {0.0f, 0.0f, 0.0f};
   EnvironmentInit();
+  PropsInit();
   TrackSystemInit();
   JunctionSystemInit();
 
@@ -40,7 +43,10 @@ int main(void) {
     InputFrame in = InputPoll(&gs.camera);
     InputProcess(&in);
     UiUpdate();
+    SaveLoadUpdate();
     TrackSystemUpdate();
+    EnvironmentUpdate();
+    PropsUpdate();
     JunctionSystemUpdate();
 
     // if (IsKeyPressed(KEY_F))
@@ -57,6 +63,7 @@ int main(void) {
       // 3D
       BeginMode3D(gs.camera.cam);
         EnvironmentGroundDraw3D();
+        PropsDraw3D();
         TrackSystemDraw3D();
         JunctionSystemDraw3D();
       EndMode3D();
@@ -75,6 +82,7 @@ int main(void) {
   }
 
   EnvironmentDestroy();
+  PropsDestroy();
   TrackSystemDestroy();
   JunctionSystemDestroy();
   CloseWindow();

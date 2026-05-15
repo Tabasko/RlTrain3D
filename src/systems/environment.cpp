@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <stdio.h>
 #include "../types.h"
 #include "raylib.h"
 #include "raymath.h"
@@ -21,6 +22,7 @@ static RenderTexture lightmap;
 static Shader lightShader;
 static Shader fogShader;
 static Vector2 lightmapScroll = {0.0f, 0.0f};
+
 
 void EnvironmentInit(void) {
 
@@ -67,35 +69,35 @@ void EnvironmentInit(void) {
     BeginTextureMode(lightmap);
         ClearBackground(BLACK);
         BeginBlendMode(BLEND_ADDITIVE);
-            // DrawTexturePro(light,
-            //     Rectangle{0, 0, (float)light.width, (float)light.height},
-            //     Rectangle{0, 0, 2.0f * MAP_SIZE, 2.0f * MAP_SIZE},
-            //     Vector2{(float)MAP_SIZE, (float)MAP_SIZE}, 0.0f, RED);
-            // DrawTexturePro(light,
-            //     Rectangle{0, 0, (float)light.width, (float)light.height},
-            //     Rectangle{(float)MAP_SIZE * 0.8f, (float)MAP_SIZE / 2.0f, 2.0f * MAP_SIZE, 2.0f * MAP_SIZE},
-            //     Vector2{(float)MAP_SIZE, (float)MAP_SIZE}, 0.0f, BLUE);
-            // DrawTexturePro(light,
-            //     Rectangle{0, 0, (float)light.width, (float)light.height},
-            //     Rectangle{(float)MAP_SIZE * 0.8f, (float)MAP_SIZE * 0.8f, (float)MAP_SIZE, (float)MAP_SIZE},
-            //     Vector2{(float)MAP_SIZE / 2.0f, (float)MAP_SIZE / 2.0f}, 0.0f, GREEN);
+            DrawTexturePro(light,
+                Rectangle{0, 0, (float)light.width, (float)light.height},
+                Rectangle{(float)MAP_SIZE * 0.4f, (float)MAP_SIZE / 4.0f, MAP_SIZE, 2.0f},
+                Vector2{(float)MAP_SIZE, (float)MAP_SIZE}, 0.0f, RED);
             DrawTexturePro(light,
                 Rectangle{0, 0, (float)light.width, (float)light.height},
                 Rectangle{(float)MAP_SIZE * 0.8f, (float)MAP_SIZE / 2.0f, 2.0f * MAP_SIZE, 2.0f * MAP_SIZE},
                 Vector2{(float)MAP_SIZE, (float)MAP_SIZE}, 0.0f, BLUE);
+            DrawTexturePro(light,
+                Rectangle{0, 0, (float)light.width, (float)light.height},
+                Rectangle{(float)MAP_SIZE * 0.8f, (float)MAP_SIZE * 0.8f, (float)MAP_SIZE, (float)MAP_SIZE},
+                Vector2{(float)MAP_SIZE, (float)MAP_SIZE}, 0.0f, GREEN);
         BeginBlendMode(BLEND_ALPHA);
     EndTextureMode();
 
     GenTextureMipmaps(&lightmap.texture);
     SetTextureFilter(lightmap.texture, TEXTURE_FILTER_TRILINEAR);
     SetTextureWrap(lightmap.texture, TEXTURE_WRAP_REPEAT);
+
 }
 
 
+void EnvironmentUpdate(void) {
+}
+
 void EnvironmentGroundDraw3D(void) {
     float dt = GetFrameTime();
-    lightmapScroll.x = fmodf(lightmapScroll.x + 0.005f * dt, 1.0f);
-    lightmapScroll.y = fmodf(lightmapScroll.y + 0.002f * dt, 1.0f);
+    lightmapScroll.x = fmodf(lightmapScroll.x + 0.0075f * dt, 1.0f);
+    lightmapScroll.y = fmodf(lightmapScroll.y + 0.004f * dt, 1.0f);
 
     float uvs[8] = {
         lightmapScroll.x,        lightmapScroll.y,
@@ -107,13 +109,14 @@ void EnvironmentGroundDraw3D(void) {
 
     DrawMesh(mesh, material, MatrixIdentity());
 
+
 }
 
 void EnvironmentDestroy(void) {
     UnloadMesh(mesh);
     UnloadShader(shader);
-    UnloadShader(lightShader);   // Unload shader
-    UnloadShader(fogShader);   // Unload shader
+    UnloadShader(lightShader);
+    UnloadShader(fogShader);
     UnloadTexture(texture);
     UnloadTexture(light);
 }

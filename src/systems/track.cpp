@@ -1,7 +1,6 @@
 #include "track.h"
 #include "../state/game_state.h"
 #include "../events/event_bus.h"
-#include "../types.h"
 #include "../colors.h"
 #include "raylib.h"
 #include "raymath.h"
@@ -17,6 +16,7 @@ static constexpr float SNAP_EP_RADIUS = 1.2f;   // endpoint snap radius in world
 static constexpr float GUIDE_HALF_LEN = 80.0f;  // half-length of axis guide lines
 static constexpr float MAX_TURN_COS      = 0.7071f; // cos(45°) — minimum dot product of consecutive segment directions
 static constexpr float ARC_SUBDIVIDE_COS = 0.9659f; // cos(15°) — insert arc midpoint anchor when turn exceeds this
+static constexpr float DRAG_THRESHOLD_PX = 5.0f;    // pixels of movement before a committed-anchor click becomes a drag
 
 // ---------------------------------------------------------------------------
 // Asset state — one model loaded once, tiled along every committed spline
@@ -42,8 +42,10 @@ struct TrackLine {
 // Live placement state — lives entirely within the system, not in gs.
 struct Placement {
     std::vector<Vector3> anchors;
-    int   drag_idx  = -1;
-    float snap_size = SNAP_DEFAULT;
+    int     drag_idx      = -1;
+    float   snap_size     = SNAP_DEFAULT;
+    bool    has_entry_dir = false; // true when the first anchor snapped to a committed anchor
+    Vector3 entry_dir     = {};    // forward direction of the committed track at the snap point
 };
 
 // ---------------------------------------------------------------------------
@@ -57,11 +59,19 @@ static bool                   s_has_guide_x;   // axis-alignment guide active on
 static float                  s_guide_x;
 static bool                   s_has_guide_z;   // axis-alignment guide active on Z
 static float                  s_guide_z;
-static bool                   s_has_snap_ep;      // cursor snapped to a committed track endpoint
+static bool                   s_has_snap_ep;         // cursor snapped to a committed track anchor
+static int                    s_snap_line   = -1;    // line index of the current snap target
+static int                    s_snap_anchor = -1;    // anchor index of the current snap target
 static float                  s_ghost_length;     // total arc length of the in-progress ghost curve
 static bool                   s_curve_too_sharp;  // proposed new anchor would exceed MAX_TURN_COS (45°)
 static int                    s_edit_line_idx   = -1; // committed line whose anchor is being dragged
 static int                    s_edit_anchor_idx = -1; // index within that line's anchor array
+// Pending-edit: mouse is down on a committed anchor but hasn't moved enough to confirm a drag.
+// On release without movement it becomes a "start placement from here" click instead.
+static bool                   s_pending_edit        = false;
+static int                    s_pending_edit_line   = -1;
+static int                    s_pending_edit_anchor = -1;
+static Vector2                s_pending_edit_origin = {};
 static bool                   s_erase_dragging;       // marquee drag in progress
 static Vector2                s_erase_start;          // screen position where the drag began
 static Vector2                s_erase_end;            // current drag end (updated each frame)
@@ -259,9 +269,14 @@ static bool GroundPos(Vector3 *out, float snap) {
     float t = -ray.position.y / ray.direction.y;
     if (t < 0.0f) return false;
     Vector3 p = Vector3Add(ray.position, Vector3Scale(ray.direction, t));
-    out->x = roundf(p.x / snap) * snap;
+    if (snap > 0.0f) {
+        out->x = roundf(p.x / snap) * snap;
+        out->z = roundf(p.z / snap) * snap;
+    } else {
+        out->x = p.x;
+        out->z = p.z;
+    }
     out->y = 0.0f;
-    out->z = roundf(p.z / snap) * snap;
     return true;
 }
 
@@ -327,13 +342,29 @@ static void DrawGhostCurve(const std::vector<Vector3>& anchors, Vector3 cursor) 
 
     // Mirror the auto-arc-midpoint logic so the ghost shows the intermediate anchor
     // in real-time as the cursor moves, matching what will be committed on click.
-    if (pts.size() >= 2 && !s_curve_too_sharp) {
-        Vector3 prev = pts[pts.size() - 2];
-        Vector3 last = pts.back();
-        Vector3 v1   = Vector3Normalize(Vector3Subtract(last, prev));
-        Vector3 v2   = Vector3Normalize(Vector3Subtract(cursor, last));
-        if (Vector3DotProduct(v1, v2) < ARC_SUBDIVIDE_COS)
-            pts.push_back(ArcMidpoint(prev, last, cursor));
+    // When only one anchor has been placed but an entry_dir is known (user snapped to
+    // existing track), use that direction so the preview is consistent with placement.
+    if (!pts.empty() && !s_curve_too_sharp) {
+        bool    has_v1  = false;
+        Vector3 gv1     = {};
+        Vector3 gv1_prev = {};
+        if (pts.size() >= 2) {
+            Vector3 prev = pts[pts.size() - 2];
+            Vector3 last = pts.back();
+            gv1      = Vector3Normalize(Vector3Subtract(last, prev));
+            gv1_prev = prev;
+            has_v1   = true;
+        } else if (s_place.has_entry_dir) {
+            gv1      = s_place.entry_dir;
+            gv1_prev = Vector3Subtract(pts[0], gv1);
+            has_v1   = true;
+        }
+        if (has_v1) {
+            Vector3 last = pts.back();
+            Vector3 v2   = Vector3Normalize(Vector3Subtract(cursor, last));
+            if (Vector3DotProduct(gv1, v2) < ARC_SUBDIVIDE_COS)
+                pts.push_back(ArcMidpoint(gv1_prev, last, cursor));
+        }
     }
 
     pts.push_back(cursor);
@@ -414,6 +445,7 @@ void TrackSystemUpdate() {
         gs.app.erase_editing  = false;
         s_place.anchors.clear();
         s_place.drag_idx      = -1;
+        s_place.has_entry_dir = false;
         s_edit_line_idx       = -1;
         s_edit_anchor_idx     = -1;
     }
@@ -470,27 +502,48 @@ void TrackSystemUpdate() {
         return; // erase mode handled; skip track-placement logic below
     }
 
-    s_has_cursor = GroundPos(&s_cursor, s_place.snap_size);
+    float snap   = IsKeyDown(KEY_LEFT_SHIFT) ? 0.0f : s_place.snap_size;
+    s_has_cursor = GroundPos(&s_cursor, snap);
     if (!s_has_cursor) return;
 
-    // Turn-angle check: block placements that deflect more than 45° at the last anchor.
-    // Uses the dot product of the incoming and outgoing direction vectors; independent of spacing.
-    s_curve_too_sharp = false;
+    // Derive the incoming direction at the last placed anchor.
+    // Falls back to the committed-track entry direction when only one anchor has been placed
+    // so that curve checks and auto-arc insertion work correctly when continuing from existing track.
+    bool    has_v1 = false;
+    Vector3 v1_dir = {};
+    Vector3 v1_prev = {}; // virtual "previous" point used by ArcMidpoint (last - v1_dir)
     if (s_place.anchors.size() >= 2) {
         Vector3 prev = s_place.anchors[s_place.anchors.size() - 2];
         Vector3 last = s_place.anchors.back();
-        Vector3 v1 = Vector3Normalize(Vector3Subtract(last, prev));
-        Vector3 v2 = Vector3Normalize(Vector3Subtract(s_cursor, last));
-        s_curve_too_sharp = (Vector3DotProduct(v1, v2) < MAX_TURN_COS);
+        v1_dir  = Vector3Normalize(Vector3Subtract(last, prev));
+        v1_prev = prev;
+        has_v1  = true;
+    } else if (s_place.anchors.size() == 1 && s_place.has_entry_dir) {
+        v1_dir  = s_place.entry_dir;
+        // Synthesise a virtual previous point one unit behind the first anchor.
+        v1_prev = Vector3Subtract(s_place.anchors[0], v1_dir);
+        has_v1  = true;
+    }
+
+    // Turn-angle check: block placements that deflect more than 45° at the last anchor.
+    s_curve_too_sharp = false;
+    if (has_v1 && !s_place.anchors.empty()) {
+        Vector3 v2 = Vector3Normalize(Vector3Subtract(s_cursor, s_place.anchors.back()));
+        s_curve_too_sharp = (Vector3DotProduct(v1_dir, v2) < MAX_TURN_COS);
     }
 
     // Anchor snap: if cursor is near any anchor on any committed track, lock to it.
+    // Record the line/anchor indices so the placement code can derive entry_dir.
     s_has_snap_ep = false;
-    for (TrackLine& line : s_lines) {
-        for (Vector3 a : line.anchors) {
-            if (Vector3Distance(s_cursor, a) < SNAP_EP_RADIUS) {
-                s_cursor      = a;
+    s_snap_line   = -1;
+    s_snap_anchor = -1;
+    for (int li = 0; li < (int)s_lines.size(); li++) {
+        for (int ai = 0; ai < (int)s_lines[li].anchors.size(); ai++) {
+            if (Vector3Distance(s_cursor, s_lines[li].anchors[ai]) < SNAP_EP_RADIUS) {
+                s_cursor      = s_lines[li].anchors[ai];
                 s_has_snap_ep = true;
+                s_snap_line   = li;
+                s_snap_anchor = ai;
                 break;
             }
         }
@@ -511,26 +564,63 @@ void TrackSystemUpdate() {
     if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
         int hit = HitAnchor(s_place.anchors);
         if (hit >= 0) {
+            // Drag an in-progress placement anchor.
             s_place.drag_idx = hit;
         } else {
             int li, ai;
-            if (HitCommittedAnchor(&li, &ai)) {
-                s_edit_line_idx   = li;
-                s_edit_anchor_idx = ai;
+            if (s_place.anchors.empty() && HitCommittedAnchor(&li, &ai)) {
+                // Mouse down on a committed anchor with no placement in progress.
+                // Defer decision: movement → drag/reposition; quick release → start placement from here.
+                s_pending_edit        = true;
+                s_pending_edit_line   = li;
+                s_pending_edit_anchor = ai;
+                s_pending_edit_origin = GetMousePosition();
             } else if (!s_curve_too_sharp) {
-                // When the turn at the last anchor exceeds 15°, insert the geometric
-                // midpoint of the circular arc as an intermediate anchor so the spline
-                // has enough shape to follow the inside of the curve.
-                if (s_place.anchors.size() >= 2) {
-                    Vector3 prev = s_place.anchors[s_place.anchors.size() - 2];
+                // Add a new placement anchor (with optional auto arc-midpoint insertion).
+                if (has_v1 && !s_place.anchors.empty()) {
                     Vector3 last = s_place.anchors.back();
-                    Vector3 v1   = Vector3Normalize(Vector3Subtract(last, prev));
                     Vector3 v2   = Vector3Normalize(Vector3Subtract(s_cursor, last));
-                    if (Vector3DotProduct(v1, v2) < ARC_SUBDIVIDE_COS)
-                        s_place.anchors.push_back(ArcMidpoint(prev, last, s_cursor));
+                    if (Vector3DotProduct(v1_dir, v2) < ARC_SUBDIVIDE_COS)
+                        s_place.anchors.push_back(ArcMidpoint(v1_prev, last, s_cursor));
+                }
+                // First anchor at a snap point: record the committed track's direction as context.
+                if (s_place.anchors.empty() && s_has_snap_ep && s_snap_line >= 0) {
+                    auto& la = s_lines[s_snap_line].anchors;
+                    int   si = s_snap_anchor, n = (int)la.size();
+                    if (si == 0)
+                        s_place.entry_dir = Vector3Normalize(Vector3Subtract(la[0], la[1]));
+                    else if (si < n - 1)
+                        s_place.entry_dir = Vector3Normalize(Vector3Subtract(la[si + 1], la[si]));
+                    else
+                        s_place.entry_dir = Vector3Normalize(Vector3Subtract(la[si], la[si - 1]));
+                    s_place.has_entry_dir = true;
                 }
                 s_place.anchors.push_back(s_cursor);
             }
+        }
+    }
+
+    // Resolve pending committed-anchor action: drag if mouse moved, place-from-here if released.
+    if (s_pending_edit) {
+        if (IsMouseButtonDown(MOUSE_LEFT_BUTTON)) {
+            if (Vector2Distance(GetMousePosition(), s_pending_edit_origin) > DRAG_THRESHOLD_PX) {
+                s_edit_line_idx       = s_pending_edit_line;
+                s_edit_anchor_idx     = s_pending_edit_anchor;
+                s_pending_edit        = false;
+            }
+        } else {
+            // Released without significant movement — start placement from this committed anchor.
+            auto& la = s_lines[s_pending_edit_line].anchors;
+            int   si = s_pending_edit_anchor, n = (int)la.size();
+            if (si == 0)
+                s_place.entry_dir = Vector3Normalize(Vector3Subtract(la[0], la[1]));
+            else if (si < n - 1)
+                s_place.entry_dir = Vector3Normalize(Vector3Subtract(la[si + 1], la[si]));
+            else
+                s_place.entry_dir = Vector3Normalize(Vector3Subtract(la[si], la[si - 1]));
+            s_place.has_entry_dir = true;
+            s_place.anchors.push_back(la[si]);
+            s_pending_edit = false;
         }
     }
 
@@ -560,7 +650,8 @@ void TrackSystemUpdate() {
             } else {
                 RebuildLineInstances(line);
             }
-            // Clear edit selection in case the deleted anchor was selected.
+            // Clear edit / pending state in case the deleted anchor was selected.
+            s_pending_edit    = false;
             s_edit_line_idx   = -1;
             s_edit_anchor_idx = -1;
         } else {
@@ -568,6 +659,7 @@ void TrackSystemUpdate() {
             CommitPlacement();
             s_place.anchors.clear();
             s_place.drag_idx      = -1;
+            s_place.has_entry_dir = false;
             s_edit_line_idx       = -1;
             s_edit_anchor_idx     = -1;
             gs.app.track_editing  = false;
@@ -581,6 +673,8 @@ void TrackSystemUpdate() {
     if (IsKeyPressed(KEY_ESCAPE)) {
         s_place.anchors.clear();
         s_place.drag_idx      = -1;
+        s_place.has_entry_dir = false;
+        s_pending_edit        = false;
         s_edit_line_idx       = -1;
         s_edit_anchor_idx     = -1;
         gs.app.track_editing  = false;
@@ -659,6 +753,32 @@ void TrackSystemDestroy() {
     s_lines.clear();
 }
 
-const Model* TrackGetModel()        { return s_model_loaded ? &s_model : nullptr; }
-Vector3      TrackGetModelForward() { return s_model_forward; }
-float        TrackGetModelLength()  { return s_model_length; }
+void TrackSystemSave(FILE *f) {
+    fprintf(f, "TRACKS %d\n", (int)s_lines.size());
+    for (const TrackLine& line : s_lines) {
+        fprintf(f, "LINE %d\n", (int)line.anchors.size());
+        for (const Vector3& a : line.anchors)
+            fprintf(f, "%.6f %.6f %.6f\n", a.x, a.y, a.z);
+    }
+}
+
+void TrackSystemLoad(FILE *f) {
+    s_lines.clear();
+    int n_lines = 0;
+    if (fscanf(f, " TRACKS %d", &n_lines) != 1) return;
+    for (int i = 0; i < n_lines; i++) {
+        int n_anchors = 0;
+        if (fscanf(f, " LINE %d", &n_anchors) != 1) return;
+        TrackLine line;
+        line.anchors.reserve(n_anchors);
+        for (int j = 0; j < n_anchors; j++) {
+            Vector3 a = {};
+            if (fscanf(f, " %f %f %f", &a.x, &a.y, &a.z) != 3) return;
+            line.anchors.push_back(a);
+        }
+        if ((int)line.anchors.size() >= 2)
+            RebuildLineInstances(line);
+        s_lines.push_back(std::move(line));
+    }
+}
+
