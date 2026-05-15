@@ -25,6 +25,12 @@ bool UiMouseInPanel(void) {
     return mp.x < PANEL_W && mp.y >= TOOLBAR_H;
 }
 
+void UiDraw(void) {
+    UiDrawToolbar();
+    if (gs.app.render_ui_left_panel)
+        UiDrawLeftPanel();
+}
+
 void UiDrawToolbar(void) {
     int sw    = GetScreenWidth();
     int btn_h = TOOLBAR_H - BAR_INSET * 2;
@@ -38,6 +44,37 @@ void UiDrawToolbar(void) {
     if (GuiButton(Rectangle{x, (float)BAR_INSET, (float)btn_w, (float)btn_h}, "Exit Game"))
         gs.app.exit_requested = true;
 }
+
+void UiDrawLeftPanel(void) {
+    int sh    = GetScreenHeight();
+    int btn_w = PANEL_W - 2 * PANEL_PAD;
+
+    DrawRectangle(0, TOOLBAR_H, PANEL_W, sh - TOOLBAR_H, Color{14, 20, 40, 220});
+    DrawLineEx(Vector2{(float)PANEL_W, (float)TOOLBAR_H}, Vector2{(float)PANEL_W, (float)sh},
+               1.0f, Color{40, 65, 105, 200});
+
+    static const struct { int icon; const char *label; } tools[] = {
+        { ICON_CURSOR_POINTER, "Select"   },
+        { ICON_PENCIL,         "Track"    },
+        { ICON_ARROW_RIGHT,    "Junction" },
+        { ICON_RUBBER,         "Erase"    },
+        { ICON_ROTATE,         "Rotate"   },
+        { ICON_GRID,           "Terrain"  },
+        { ICON_GEAR,           "Settings" },
+    };
+    static const int tool_count = sizeof(tools) / sizeof(tools[0]);
+
+    int y = TOOLBAR_H + PANEL_PAD;
+    for (int i = 0; i < tool_count; i++) {
+        Rectangle rect = { (float)PANEL_PAD, (float)y, (float)btn_w, (float)PANEL_ITEM_H };
+        if (GuiButton(rect, GuiIconText(tools[i].icon, tools[i].label))) {
+            if (i == 1) gs.events.emit(EVENT_START_TRACK_EDIT);
+            if (i == 2) gs.events.emit(EVENT_START_JUNCTION_EDIT);
+        }
+        y += PANEL_ITEM_H + PANEL_PAD / 2;
+    }
+}
+
 
 // ---------------------------------------------------------------------------
 // Confirmation panel
@@ -58,7 +95,8 @@ void UI_ShowConfirm(const char *title, const char *message,
         _panel.buttons[i] = buttonDefs[i];
 }
 
-void UiDraw(void) {
+
+void UiDraw_old(void) {
     if (!_panel.active) return;
 
     int sw = GetScreenWidth();
@@ -119,12 +157,19 @@ static UI_Dialog_Type s_dialog_type = (UI_Dialog_Type)-1;
 
 void UiUpdate(void) {
     if (!UI_IsActive()) {
-        if (IsKeyPressed(KEY_ESCAPE)) {
+        // ESC is consumed by the track system while editing; only open exit dialog otherwise
+        if (IsKeyPressed(KEY_ESCAPE) && !gs.app.track_editing && !gs.app.junction_editing) {
             s_dialog_type = CONFIRM_EXIT;
             UI_ShowConfirm("Exit Game", "Do you want to exit the Game.",
                            UI_CONFIRM_PANEL_EXIT, 2);
         }
+        if (IsKeyPressed(KEY_TAB))
+            gs.events.emit(EVENT_TOGGLE_LEFT_PANEL);
     }
+
+    // Consume events from last frame
+    if (gs.events.has(EVENT_TOGGLE_LEFT_PANEL))
+        gs.app.render_ui_left_panel = !gs.app.render_ui_left_panel;
 
     int result = UI_GetResult();
     if (result != UI_RESULT_NONE) {

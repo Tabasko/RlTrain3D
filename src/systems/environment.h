@@ -1,6 +1,7 @@
 #pragma once
 
-void EnvironmentCreate(void);
+#define MAP_SIZE 256
+
+void EnvironmentInit(void);
 void EnvironmentGroundDraw3D(void);
-void EnvironmentGroundDraw(void);
 void EnvironmentDestroy(void);
