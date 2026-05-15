@@ -70,6 +70,7 @@ void UiDrawLeftPanel(void) {
         if (GuiButton(rect, GuiIconText(tools[i].icon, tools[i].label))) {
             if (i == 1) gs.events.emit(EVENT_START_TRACK_EDIT);
             if (i == 2) gs.events.emit(EVENT_START_JUNCTION_EDIT);
+            if (i == 3) gs.events.emit(EVENT_START_ERASE_EDIT);
         }
         y += PANEL_ITEM_H + PANEL_PAD / 2;
     }
@@ -158,7 +159,7 @@ static UI_Dialog_Type s_dialog_type = (UI_Dialog_Type)-1;
 void UiUpdate(void) {
     if (!UI_IsActive()) {
         // ESC is consumed by the track system while editing; only open exit dialog otherwise
-        if (IsKeyPressed(KEY_ESCAPE) && !gs.app.track_editing && !gs.app.junction_editing) {
+        if (IsKeyPressed(KEY_ESCAPE) && !gs.app.track_editing && !gs.app.junction_editing && !gs.app.erase_editing) {
             s_dialog_type = CONFIRM_EXIT;
             UI_ShowConfirm("Exit Game", "Do you want to exit the Game.",
                            UI_CONFIRM_PANEL_EXIT, 2);

@@ -9,6 +9,7 @@ typedef enum {
     EVENT_TOGGLE_LEFT_PANEL,
     EVENT_START_TRACK_EDIT,
     EVENT_START_JUNCTION_EDIT,
+    EVENT_START_ERASE_EDIT,
 } EventType;
 
 // Payload carrier — add field types here as new events require them.

@@ -12,6 +12,7 @@ typedef struct {
     bool render_block_colors;   // color tracks by signal/block state
     bool track_editing;         // true while the user is placing a track line
     bool junction_editing;      // true while the user is placing a junction
+    bool erase_editing;         // true while the user is marquee-selecting track to erase
 } AppState;
 
 typedef struct {

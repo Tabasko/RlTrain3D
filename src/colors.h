@@ -8,6 +8,7 @@
 #define COL_TRACK         (Color){  94, 198, 218, 255 }
 #define COL_TRACK_DIM     (Color){  44, 108, 128, 255 }
 #define COL_TRACK_GHOST   (Color){  94, 198, 218,  80 }
+#define COL_TRACK_GHOST_BAD (Color){ 220,  60,  60,  80 }
 #define COL_TRACK_BALLAST (Color){  28,  48,  72, 255 }
 #define COL_TRAIN_BODY    (Color){ 255, 210,  80, 255 }
 #define COL_TRAIN_CAB     (Color){ 255, 240, 140, 255 }
