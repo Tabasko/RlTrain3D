@@ -6,6 +6,7 @@
 #include "systems/props.h"
 #include "systems/saveload.h"
 #include "systems/track.h"
+#include "systems/train.h"
 #include "colors.h"
 #include "ui/ui.h"
 #include <raylib.h>
@@ -32,6 +33,9 @@ int main(void) {
   PropsInit();
   TrackSystemInit();
   JunctionSystemInit();
+  TrainSystemInit();
+
+  gs.events.emit(EVENT_FILE_OPEN);
 
   // Game Loop
   while (!gs.app.exit_requested) {
@@ -48,6 +52,7 @@ int main(void) {
     EnvironmentUpdate();
     PropsUpdate();
     JunctionSystemUpdate();
+    TrainSystemUpdate();
 
     // if (IsKeyPressed(KEY_F))
     //   gs.camera.followTarget =
@@ -66,6 +71,7 @@ int main(void) {
         PropsDraw3D();
         TrackSystemDraw3D();
         JunctionSystemDraw3D();
+        TrainSystemDraw3D();
       EndMode3D();
 
       // UI
@@ -85,6 +91,7 @@ int main(void) {
   PropsDestroy();
   TrackSystemDestroy();
   JunctionSystemDestroy();
+  TrainSystemDestroy();
   CloseWindow();
   return 0;
 }

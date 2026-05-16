@@ -53,8 +53,9 @@ void TrackGeomInit() {
     // Left variants negate x and heading; arc length = R·θ for both.
     float s2 = 2.0f * DEG15; // 30°
 
-    s_geom[TILE_STRAIGHT_S]   = {{ 0, 0, 8.0f*TILE_MESH_SCALE }, 0.0f, 8.0f*TILE_MESH_SCALE };
-    s_geom[TILE_STRAIGHT_L]   = {{ 0, 0, 8.0f*TILE_MESH_SCALE }, 0.0f, 8.0f*TILE_MESH_SCALE };
+    s_geom[TILE_STRAIGHT_S]   = {{ 0, 0, -8.0f*TILE_MESH_SCALE }, 0.0f, 8.0f*TILE_MESH_SCALE };
+    s_geom[TILE_STRAIGHT_L]   = {{ 0, 0, -8.0f*TILE_MESH_SCALE }, 0.0f, 8.0f*TILE_MESH_SCALE };
+    s_geom[TILE_STRAIGHT_XL]   = {{ 0, 0, -64.0f*TILE_MESH_SCALE }, 0.0f, 64.0f*TILE_MESH_SCALE };
 
     s_geom[TILE_CURVE_R1_15]   = {{ 20.0f * sinf(DEG15),  0, 20.0f * (1.0f - cosf(DEG15)) },  DEG15, 20.0f * DEG15 };
     s_geom[TILE_CURVE_R1_15_L] = {{ -20.0f * sinf(DEG15), 0, 20.0f * (1.0f - cosf(DEG15)) }, -DEG15, 20.0f * DEG15 };

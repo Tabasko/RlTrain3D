@@ -33,13 +33,15 @@ static const int MESH_IDX[TILE_TYPE_COUNT] = {
     4, // CURVE_R2_30   → mesh 4
     4, // CURVE_R2_30_L → mesh 4
 };
-static constexpr int NUM_MESHES = 5;
+static constexpr int NUM_MESHES = 6;
 
 static Model    s_meshes[NUM_MESHES];
 static bool     s_mesh_ok[NUM_MESHES];
 static Material s_mat_track;
 static Material s_mat_ghost;
 static Material s_mat_ghost_bad;
+static Texture2D s_tex_arrow;
+static bool      s_tex_arrow_ok = false;
 
 // ---------------------------------------------------------------------------
 // Placement state machine
@@ -58,7 +60,7 @@ static PlacementState s_place;
 // ---------------------------------------------------------------------------
 // Ghost sequence — recomputed each frame during placement
 // ---------------------------------------------------------------------------
-struct GhostTile { TileType type; Matrix world; };
+struct GhostTile { TileType type; Matrix world; Vector3 entry_pos; float entry_heading; };
 static std::vector<GhostTile> s_ghost;
 static bool                   s_ghost_invalid = false;
 
@@ -83,6 +85,7 @@ static Vector2 s_erase_end;
 // ---------------------------------------------------------------------------
 static TileType s_dbg_tile      = TILE_STRAIGHT_S;
 static float    s_heading_offset = 0.0f;
+static int      s_chain_tile    = TILE_NO_LINK; // index of last placed tile for chain-snap
 
 // ---------------------------------------------------------------------------
 // Dubins path (currently unused — will drive automatic path generation)
@@ -112,7 +115,9 @@ static void ComputePath(Vector3 start_pos, float start_heading,
 
     for (int i = 0; i < abs_steps; i++) {
         GhostTile gt;
-        gt.type  = curve_r;
+        gt.type         = curve_r;
+        gt.entry_pos    = cur_pos;
+        gt.entry_heading = cur_heading;
         gt.world = TileMatrix(cur_pos, cur_heading);
         if (IsLeftCurve(curve_r)) gt.world = MirrorX(gt.world);
         out.push_back(gt);
@@ -138,14 +143,18 @@ static void ComputePath(Vector3 start_pos, float start_heading,
         int n_short = (rem >= len_s * 0.5f) ? 1 : 0;
         for (int i = 0; i < n_long; i++) {
             GhostTile gt;
-            gt.type  = TILE_STRAIGHT_L;
+            gt.type          = TILE_STRAIGHT_L;
+            gt.entry_pos     = cur_pos;
+            gt.entry_heading = cur_heading;
             gt.world = TileMatrix(cur_pos, cur_heading);
             out.push_back(gt);
             WalkTile(TILE_STRAIGHT_L, cur_pos, cur_heading, &cur_pos, &cur_heading);
         }
         for (int i = 0; i < n_short; i++) {
             GhostTile gt;
-            gt.type  = TILE_STRAIGHT_S;
+            gt.type          = TILE_STRAIGHT_S;
+            gt.entry_pos     = cur_pos;
+            gt.entry_heading = cur_heading;
             gt.world = TileMatrix(cur_pos, cur_heading);
             out.push_back(gt);
             WalkTile(TILE_STRAIGHT_S, cur_pos, cur_heading, &cur_pos, &cur_heading);
@@ -159,7 +168,9 @@ static void ComputePath(Vector3 start_pos, float start_heading,
         TileType arr_curve = arr_left ? TILE_CURVE_R2_15_L : TILE_CURVE_R2_15;
         for (int i = 0; i < abs(arr_steps); i++) {
             GhostTile gt;
-            gt.type  = arr_curve;
+            gt.type          = arr_curve;
+            gt.entry_pos     = cur_pos;
+            gt.entry_heading = cur_heading;
             gt.world = TileMatrix(cur_pos, cur_heading);
             if (IsLeftCurve(arr_curve)) gt.world = MirrorX(gt.world);
             out.push_back(gt);
@@ -192,9 +203,10 @@ void TrackSystemInit() {
     static const char *mesh_paths[NUM_MESHES] = {
         "assets/track-straight-s.glb",  // 0 — available
         nullptr,                         // 1 — STRAIGHT_L, pending
-        nullptr,                         // 2 — CURVE_R1_15, pending
-        nullptr,                         // 3 — CURVE_R2_15, pending
-        "assets/track-curve-r2-30.glb", // 4 — CURVE_R2_30
+        "assets/track-straight-xl.glb", // 2 — STRAIGHT_XL
+        nullptr,                         // 3 — CURVE_R1_15, pending
+        nullptr,                         // 4 — CURVE_R2_15, pending
+        "assets/track-curve-r2-30.glb", // 5 — CURVE_R2_30
     };
 
     for (int i = 0; i < NUM_MESHES; i++) {
@@ -214,6 +226,11 @@ void TrackSystemInit() {
 
     s_mat_ghost_bad = LoadMaterialDefault();
     s_mat_ghost_bad.maps[MATERIAL_MAP_DIFFUSE].color = COL_TRACK_GHOST_BAD;
+
+    s_tex_arrow    = LoadTexture("assets/icons/arrowUp.png");
+    s_tex_arrow_ok = (s_tex_arrow.id > 0);
+    if (!s_tex_arrow_ok)
+        TraceLog(LOG_WARNING, "TRACK: failed to load assets/icons/arrowUp.png");
 }
 
 void TrackSystemUpdate() {
@@ -286,18 +303,34 @@ void TrackSystemUpdate() {
     s_cursor_snapped = false;
     s_snap_tile      = TILE_NO_LINK;
     s_snap_ep        = TILE_NO_LINK;
-    for (int ti = 0; ti < (int)s_tiles.size(); ti++) {
-        for (int ep = 0; ep < s_tiles[ti].ep_count; ep++) {
-            if (s_tiles[ti].eps[ep].linked_junction != TILE_NO_LINK) continue;
-            if (Vector3Distance(s_cursor, s_tiles[ti].eps[ep].pos) < SNAP_EP_R) {
-                s_cursor         = s_tiles[ti].eps[ep].pos;
-                s_cursor_snapped = true;
-                s_snap_tile      = ti;
-                s_snap_ep        = ep;
-                break;
-            }
+
+    // Chain placement: while cursor stays near the entry of the just-placed tile,
+    // force-snap to its exit so the next tile chains forward without the user moving.
+    if (s_chain_tile != TILE_NO_LINK) {
+        if (Vector3Distance(s_cursor, s_tiles[s_chain_tile].eps[0].pos) < SNAP_EP_R) {
+            s_cursor         = s_tiles[s_chain_tile].eps[1].pos;
+            s_cursor_snapped = true;
+            s_snap_tile      = s_chain_tile;
+            s_snap_ep        = 1;
+        } else {
+            s_chain_tile = TILE_NO_LINK; // cursor moved away — resume normal snap
         }
-        if (s_cursor_snapped) break;
+    }
+
+    if (!s_cursor_snapped) {
+        for (int ti = 0; ti < (int)s_tiles.size(); ti++) {
+            for (int ep = 0; ep < s_tiles[ti].ep_count; ep++) {
+                if (s_tiles[ti].eps[ep].linked_junction != TILE_NO_LINK) continue;
+                if (Vector3Distance(s_cursor, s_tiles[ti].eps[ep].pos) < SNAP_EP_R) {
+                    s_cursor         = s_tiles[ti].eps[ep].pos;
+                    s_cursor_snapped = true;
+                    s_snap_tile      = ti;
+                    s_snap_ep        = ep;
+                    break;
+                }
+            }
+            if (s_cursor_snapped) break;
+        }
     }
 
     // ── Keyboard shortcuts ─────────────────────────────────────────────────
@@ -313,8 +346,8 @@ void TrackSystemUpdate() {
         s_heading_offset = NormAngle(s_heading_offset + step);
     }
 
-    // D: cycle the traffic-direction constraint written into placed tile arcs.
-    if (IsKeyPressed(KEY_D)) {
+    // Z: cycle the traffic-direction constraint written into placed tile arcs.
+    if (IsKeyPressed(KEY_Z)) {
         if      (s_place.dir == ARC_DIR_BOTH)   s_place.dir = ARC_DIR_A_TO_B;
         else if (s_place.dir == ARC_DIR_A_TO_B) s_place.dir = ARC_DIR_B_TO_A;
         else                                     s_place.dir = ARC_DIR_BOTH;
@@ -336,7 +369,9 @@ void TrackSystemUpdate() {
         float ghost_heading = NormAngle(base_heading + s_heading_offset);
 
         GhostTile gt;
-        gt.type  = s_dbg_tile;
+        gt.type          = s_dbg_tile;
+        gt.entry_pos     = s_cursor;
+        gt.entry_heading = ghost_heading;
         gt.world = TileMatrix(s_cursor, ghost_heading);
         if (IsLeftCurve(s_dbg_tile)) gt.world = MirrorX(gt.world);
         s_ghost.push_back(gt);
@@ -357,10 +392,18 @@ void TrackSystemUpdate() {
         PlaceTile(s_dbg_tile, s_cursor, ph, s_place.dir);
         s_heading_offset = 0.0f;
         RebuildInstanceBuffers();
+        // Advance cursor to the exit of the placed tile so the next click chains forward.
+        int ni        = (int)s_tiles.size() - 1;
+        s_chain_tile  = ni;
+        s_cursor      = s_tiles[ni].eps[1].pos;
+        s_cursor_snapped = true;
+        s_snap_tile   = ni;
+        s_snap_ep     = 1;
     }
 
     if (IsMouseButtonPressed(MOUSE_RIGHT_BUTTON) || IsKeyPressed(KEY_ESCAPE)) {
         s_place              = {};
+        s_chain_tile         = TILE_NO_LINK;
         gs.app.track_editing = false;
         s_ghost.clear();
     }
@@ -376,11 +419,15 @@ void TrackSystemDraw3D() {
     }
 
     // Open endpoints — shown in both editing modes.
-    if (gs.app.track_editing || gs.app.erase_editing) {
+    if (gs.app.track_editing || gs.app.erase_editing || gs.app.render_track_debug) {
         for (const PlacedTile& tile : s_tiles)
             for (int ep = 0; ep < tile.ep_count; ep++)
-                if (tile.eps[ep].linked_tile == TILE_NO_LINK)
-                    DrawSphere(tile.eps[ep].pos, 0.3f, COL_SNAP_ENDPOINT);
+                if (tile.eps[ep].linked_tile     == TILE_NO_LINK &&
+                    tile.eps[ep].linked_junction == TILE_NO_LINK){
+                        Color c = (ep == 0) ? BLUE : GREEN;
+                        DrawSphere(tile.eps[ep].pos, 0.3f, c);
+                    }
+                    
     }
 
     if (gs.app.track_editing && s_has_cursor)
@@ -414,6 +461,60 @@ void TrackSystemDraw2D() {
         DrawRectangleLinesEx(r, 1.5f, Color{220, 60, 60, 200});
     }
 
+    // Direction arrows — one per placed tile and ghost, gated on the debug flag.
+    if (gs.app.render_track_debug && s_tex_arrow_ok) {
+        static constexpr float SZ     = 28.0f;
+        static constexpr float OFFSET =  9.0f; // perpendicular screen-pixel offset for BOTH
+        static constexpr Color COL_A_TO_B = {  80, 200,  80, 220 }; // green  — A→B
+        static constexpr Color COL_B_TO_A = { 220, 100,  60, 220 }; // orange — B→A
+
+        Rectangle src = { 0, 0, (float)s_tex_arrow.width, (float)s_tex_arrow.height };
+        Vector2   org = { SZ * 0.5f, SZ * 0.5f };
+
+        // Draws a single oriented arrow from ep0 to ep1, shifted by a screen-space offset.
+        auto DrawArrow = [&](Vector3 ep0, Vector3 ep1, Color tint, Vector2 offset) {
+            Vector2 sc0 = GetWorldToScreen(ep0, gs.camera.cam);
+            Vector2 sc1 = GetWorldToScreen(ep1, gs.camera.cam);
+            Vector2 mid = { (sc0.x + sc1.x) * 0.5f + offset.x,
+                            (sc0.y + sc1.y) * 0.5f + offset.y };
+            float rot = RAD2DEG * atan2f(sc1.y - sc0.y, sc1.x - sc0.x) + 90.0f;
+            DrawTexturePro(s_tex_arrow, src, { mid.x, mid.y, SZ, SZ }, org, rot, tint);
+        };
+
+        // Perpendicular screen offset for the BOTH case, derived from ep0→ep1 direction.
+        auto PerpOffset = [&](Vector3 ep0, Vector3 ep1) -> Vector2 {
+            Vector2 sc0 = GetWorldToScreen(ep0, gs.camera.cam);
+            Vector2 sc1 = GetWorldToScreen(ep1, gs.camera.cam);
+            float dx = sc1.x - sc0.x, dy = sc1.y - sc0.y;
+            float len = sqrtf(dx * dx + dy * dy);
+            if (len < 0.001f) return { OFFSET, 0.0f };
+            return { -dy / len * OFFSET, dx / len * OFFSET };
+        };
+
+        auto DrawDirectionArrows = [&](Vector3 ep0, Vector3 ep1, ArcDirection dir) {
+            if (dir == ARC_DIR_A_TO_B) {
+                DrawArrow(ep0, ep1, COL_A_TO_B, { 0.0f, 0.0f });
+            } else if (dir == ARC_DIR_B_TO_A) {
+                DrawArrow(ep1, ep0, COL_B_TO_A, { 0.0f, 0.0f });
+            } else {
+                Vector2 perp = PerpOffset(ep0, ep1);
+                DrawArrow(ep0, ep1, COL_A_TO_B, perp);
+                DrawArrow(ep1, ep0, COL_B_TO_A, { -perp.x, -perp.y });
+            }
+        };
+
+        for (const PlacedTile& tile : s_tiles)
+            DrawDirectionArrows(tile.eps[0].pos, tile.eps[1].pos, tile.direction);
+
+        if (gs.app.track_editing && s_has_cursor) {
+            for (const GhostTile& g : s_ghost) {
+                Vector3 exit_pos; float exit_h;
+                WalkTile(g.type, g.entry_pos, g.entry_heading, &exit_pos, &exit_h);
+                DrawDirectionArrows(g.entry_pos, exit_pos, s_place.dir);
+            }
+        }
+    }
+
     if (!gs.app.track_editing || !s_has_cursor) return;
 
     Vector2 sc = GetWorldToScreen(s_cursor, gs.camera.cam);
@@ -424,6 +525,7 @@ void TrackSystemDraw2D() {
 void TrackSystemDestroy() {
     for (int i = 0; i < NUM_MESHES; i++)
         if (s_mesh_ok[i]) UnloadModel(s_meshes[i]);
+    if (s_tex_arrow_ok) UnloadTexture(s_tex_arrow);
     s_tiles.clear();
     s_junctions.clear();
     s_ghost.clear();

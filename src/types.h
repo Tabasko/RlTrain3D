@@ -69,6 +69,7 @@ typedef enum {
 #define MAX_JUNC_ENDS 6
 #define MAX_TRAINS 64
 #define MAX_CARS_PER_TRAIN 12 // max cars in any TrainDef entry
+#define MAX_TILE_TRAINS 16
 
 // Depth of the segment history ring buffer stored in each Train.
 // Must cover (longest_train_px / shortest_segment_px) past segments.
@@ -110,6 +111,7 @@ typedef enum {
 typedef enum {
   TILE_STRAIGHT_S   = 0, // short straight (~4 m)
   TILE_STRAIGHT_L,       // long straight  (~8 m)
+  TILE_STRAIGHT_XL,      // extra long straight  (~64 m)
   TILE_CURVE_R1_15,      // R=20 m, 15° right arc
   TILE_CURVE_R1_15_L,    // R=20 m, 15° left  arc
   TILE_CURVE_R2_15,      // R=40 m, 15° right arc
@@ -291,3 +293,19 @@ typedef struct {
   int      entity_idx; // index into placed_pieces or placed_stations
   int      pin_idx;
 } PinConn;
+
+// ---------------------------------------------------------------------------
+// Tile-train — one train driving along the tile-based track system.
+//
+// arc_dist is the distance from eps[0] of the current tile along the arc.
+// speed is the current signed velocity; target_speed is the desired signed
+// velocity. The train accelerates toward target_speed each frame.
+// At open endpoints speed is zeroed and target_speed is flipped so the train
+// decelerates to a stop then re-accelerates in the opposite direction.
+// ---------------------------------------------------------------------------
+typedef struct {
+    int   tile_idx;     // index into s_tiles; -1 = inactive slot
+    float arc_dist;     // distance from eps[0], in [0, tile arc_length]
+    float speed;        // current signed velocity (world units/sec)
+    float target_speed; // desired signed velocity; flipped on reversal
+} TileTrain;

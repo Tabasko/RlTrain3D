@@ -55,13 +55,14 @@ void UiDrawLeftPanel(void) {
                1.0f, Color{40, 65, 105, 200});
 
     static const struct { int icon; const char *label; } tools[] = {
-        { ICON_CURSOR_POINTER, "Select"   },
-        { ICON_PENCIL,         "Track"    },
-        { ICON_ARROW_RIGHT,    "Junction" },
-        { ICON_RUBBER,         "Erase"    },
-        { ICON_ROTATE,         "Rotate"   },
-        { ICON_GRID,           "Terrain"  },
-        { ICON_GEAR,           "Settings" },
+        { ICON_CURSOR_POINTER, "Select"    },
+        { ICON_PENCIL,         "Track"     },
+        { ICON_ARROW_RIGHT,    "Junction"  },
+        { ICON_RUBBER,         "Erase"     },
+        { ICON_ROTATE,         "Rotate"    },
+        { ICON_GRID,           "Terrain"   },
+        { ICON_PLAYER,         "Add Train" },
+        { ICON_GEAR,           "Settings"  },
     };
     static const int tool_count = sizeof(tools) / sizeof(tools[0]);
 
@@ -72,6 +73,7 @@ void UiDrawLeftPanel(void) {
             if (i == 1) gs.events.emit(EVENT_START_TRACK_EDIT);
             if (i == 2) gs.events.emit(EVENT_START_JUNCTION_EDIT);
             if (i == 3) gs.events.emit(EVENT_START_ERASE_EDIT);
+            if (i == 6) gs.events.emit(EVENT_START_TRAIN_PLACE);
         }
         y += PANEL_ITEM_H + PANEL_PAD / 2;
     }
@@ -137,7 +139,7 @@ static UI_Dialog_Type s_dialog_type = (UI_Dialog_Type)-1;
 void UiUpdate(void) {
     if (!UI_IsActive()) {
         // ESC is consumed by the track system while editing; only open exit dialog otherwise
-        if (IsKeyPressed(KEY_ESCAPE) && !gs.app.track_editing && !gs.app.junction_editing && !gs.app.erase_editing) {
+        if (IsKeyPressed(KEY_ESCAPE) && !gs.app.track_editing && !gs.app.junction_editing && !gs.app.erase_editing && !gs.app.train_placing) {
             s_dialog_type = CONFIRM_EXIT;
             UI_ShowConfirm("Exit Game", "Do you want to exit the Game.",
                            UI_CONFIRM_PANEL_EXIT, 2);

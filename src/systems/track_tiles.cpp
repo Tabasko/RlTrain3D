@@ -217,15 +217,26 @@ bool GhostCollides(Vector3 entry, Vector3 exit) {
     SampleTileLine(entry, exit, ghost);
 
     for (const PlacedTile& t : s_tiles) {
+        // Does this tile share an endpoint with the ghost's entry or exit?
+        // If so, samples on both sides near that shared point must be exempted,
+        // because sample spacing (0.25) is smaller than OVERLAP_R (0.5).
+        bool t_near_entry = Vector3Distance(t.eps[0].pos, entry) < OVERLAP_R
+                         || Vector3Distance(t.eps[1].pos, entry) < OVERLAP_R;
+        bool t_near_exit  = Vector3Distance(t.eps[0].pos, exit)  < OVERLAP_R
+                         || Vector3Distance(t.eps[1].pos, exit)  < OVERLAP_R;
+
         Vector3 tile[TILE_SAMPLE_N];
         SampleTileLine(t.eps[0].pos, t.eps[1].pos, tile);
 
         for (int i = 0; i < TILE_SAMPLE_N; i++) {
-            if (i == 0                && entry_exempt) continue;
-            if (i == TILE_SAMPLE_N-1 && exit_exempt)  continue;
-            for (int j = 0; j < TILE_SAMPLE_N; j++)
+            if (entry_exempt && Vector3Distance(ghost[i], entry) < OVERLAP_R) continue;
+            if (exit_exempt  && Vector3Distance(ghost[i], exit)  < OVERLAP_R) continue;
+            for (int j = 0; j < TILE_SAMPLE_N; j++) {
+                if (t_near_entry && Vector3Distance(tile[j], entry) < OVERLAP_R) continue;
+                if (t_near_exit  && Vector3Distance(tile[j], exit)  < OVERLAP_R) continue;
                 if (Vector3Distance(ghost[i], tile[j]) < OVERLAP_R)
                     return true;
+            }
         }
     }
     return false;

@@ -1,13 +1,14 @@
 #include <stdio.h>
 #include "saveload.h"
 #include "track.h"
+#include "train.h"
 #include "props.h"
 #include "../events/event_bus.h"
 #include "../state/game_state.h"
 #include "raylib.h"
 
 #define SAVE_FILE    "savegame.rlt"
-#define SAVE_VERSION 2
+#define SAVE_VERSION 3
 
 void SaveLoadUpdate(void) {
     if (gs.events.has(EVENT_FILE_SAVE)) {
@@ -20,6 +21,8 @@ void SaveLoadUpdate(void) {
         TrackSystemSave(f);
         fprintf(f, "\n");
         PropsSave(f);
+        fprintf(f, "\n");
+        TrainSystemSave(f);
         fclose(f);
         TraceLog(LOG_INFO, "SAVE: wrote %s", SAVE_FILE);
     }
@@ -38,6 +41,7 @@ void SaveLoadUpdate(void) {
         }
         TrackSystemLoad(f);
         PropsLoad(f);
+        TrainSystemLoad(f);
         fclose(f);
         TraceLog(LOG_INFO, "SAVE: loaded %s", SAVE_FILE);
     }

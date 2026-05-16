@@ -11,7 +11,8 @@ typedef enum {
     EVENT_START_JUNCTION_EDIT,
     EVENT_START_ERASE_EDIT,
     EVENT_FILE_OPEN,
-    EVENT_FILE_SAVE
+    EVENT_FILE_SAVE,
+    EVENT_START_TRAIN_PLACE
 } EventType;
 
 // Payload carrier — add field types here as new events require them.

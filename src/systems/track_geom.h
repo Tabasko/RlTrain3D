@@ -9,7 +9,7 @@ static constexpr float DEG15           = 0.261799f;    // π/12 (15°)
 static constexpr float DEG45           = 3.0f * DEG15; // π/4  (45°)
 static constexpr float TILE_MESH_SCALE = 0.25f;        // uniform scale applied to loaded meshes
 static constexpr int   TILE_NO_LINK    = -1;
-static constexpr float SNAP_EP_R       = 1.0f;         // world-space endpoint snap radius
+static constexpr float SNAP_EP_R       = 0.5f;         // world-space endpoint snap radius
 
 // Per-type geometry: local-space exit endpoint (entry is always origin, heading 0).
 // Right-curve: exit.pos = (R·sinθ, 0, R·(1−cosθ)), exit.heading = θ.

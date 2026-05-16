@@ -13,6 +13,7 @@ typedef struct {
     bool track_editing;         // true while the user is placing a track line
     bool junction_editing;      // true while the user is placing a junction
     bool erase_editing;         // true while the user is marquee-selecting track to erase
+    bool train_placing;         // true while the user is clicking to place a train
 } AppState;
 
 typedef struct {
