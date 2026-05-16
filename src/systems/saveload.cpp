@@ -8,7 +8,7 @@
 #include "raylib.h"
 
 #define SAVE_FILE    "savegame.rlt"
-#define SAVE_VERSION 3
+#define SAVE_VERSION 4
 
 void SaveLoadUpdate(void) {
     if (gs.events.has(EVENT_FILE_SAVE)) {

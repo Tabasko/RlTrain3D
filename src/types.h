@@ -69,7 +69,7 @@ typedef enum {
 #define MAX_JUNC_ENDS 6
 #define MAX_TRAINS 64
 #define MAX_CARS_PER_TRAIN 12 // max cars in any TrainDef entry
-#define MAX_TILE_TRAINS 16
+#define MAX_TILE_TRAINS 128
 
 // Depth of the segment history ring buffer stored in each Train.
 // Must cover (longest_train_px / shortest_segment_px) past segments.
@@ -304,8 +304,9 @@ typedef struct {
 // decelerates to a stop then re-accelerates in the opposite direction.
 // ---------------------------------------------------------------------------
 typedef struct {
-    int   tile_idx;     // index into s_tiles; -1 = inactive slot
-    float arc_dist;     // distance from eps[0], in [0, tile arc_length]
+    int   def_idx;      // index into TRAIN_CATALOG; selects speed, accel, consist
+    int   tile_idx;     // front coupling of car[0], current tile; -1 = inactive
+    float arc_dist;     // front coupling distance from eps[0]
     float speed;        // current signed velocity (world units/sec)
     float target_speed; // desired signed velocity; flipped on reversal
 } TileTrain;
