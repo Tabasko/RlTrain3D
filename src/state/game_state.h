@@ -1,6 +1,7 @@
 #pragma once
 #include "../camera.hpp"
 #include "../events/event_bus.h"
+#include "../events/event_system.h"
 
 typedef struct {
     bool exit_requested;
@@ -27,6 +28,7 @@ typedef struct {
     UiState    ui;
     AppState   app;
     EventBus   events;
+    EventBusSystem bus;
 } GameState;
 
 extern GameState gs;

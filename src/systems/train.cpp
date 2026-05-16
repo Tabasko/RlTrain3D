@@ -109,6 +109,12 @@ static bool CrossBoundary(TileTrain& tr, int ep_idx, float overflow) {
         tr.arc_dist     = (ep_idx == 1) ? s_geom[s_tiles[tr.tile_idx].type].length : 0.0f;
         tr.speed        = 0.0f;
         tr.target_speed = -tr.target_speed;
+        _Event e;
+        e.type = _EventType::TRAIN_ARRIVED_STATION;
+        e.params["stationName"] = std::string("Düsseldorf Hbf");
+        e.params["track"] = 5;
+
+        gs.bus.emit(e);
         return false;
     }
 
@@ -124,6 +130,7 @@ static bool CrossBoundary(TileTrain& tr, int ep_idx, float overflow) {
         tr.speed        = -fabsf(tr.speed);
         tr.target_speed = -fabsf(tr.target_speed);
     }
+
     return true;
 }
 
