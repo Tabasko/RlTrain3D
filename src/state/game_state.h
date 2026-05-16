@@ -1,7 +1,7 @@
 #pragma once
 #include "../camera.hpp"
 #include "../events/event_bus.h"
-#include "../events/event_system.h"
+#include "../ecs/registry.h"
 
 typedef struct {
     bool exit_requested;
@@ -15,6 +15,7 @@ typedef struct {
     bool junction_editing;      // true while the user is placing a junction
     bool erase_editing;         // true while the user is marquee-selecting track to erase
     bool train_placing;         // true while the user is clicking to place a train
+    bool signal_placing;        // true while the user is clicking to place a signal
 } AppState;
 
 typedef struct {
@@ -28,7 +29,7 @@ typedef struct {
     UiState    ui;
     AppState   app;
     EventBus   events;
-    EventBusSystem bus;
+    Registry   ecs;
 } GameState;
 
 extern GameState gs;

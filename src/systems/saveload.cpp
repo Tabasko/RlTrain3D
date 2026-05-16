@@ -18,11 +18,11 @@ void SaveLoadUpdate(void) {
             return;
         }
         fprintf(f, "VERSION %d\n\n", SAVE_VERSION);
-        TrackSystemSave(f);
+        track_system.Save(f);
         fprintf(f, "\n");
-        PropsSave(f);
+        props_system.Save(f);
         fprintf(f, "\n");
-        TrainSystemSave(f);
+        train_system.Save(f);
         fclose(f);
         TraceLog(LOG_INFO, "SAVE: wrote %s", SAVE_FILE);
     }
@@ -39,9 +39,9 @@ void SaveLoadUpdate(void) {
             fclose(f);
             return;
         }
-        TrackSystemLoad(f);
-        PropsLoad(f);
-        TrainSystemLoad(f);
+        track_system.Load(f);
+        props_system.Load(f);
+        train_system.Load(f);
         fclose(f);
         TraceLog(LOG_INFO, "SAVE: loaded %s", SAVE_FILE);
     }

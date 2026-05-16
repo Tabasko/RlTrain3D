@@ -1,8 +1,15 @@
 #pragma once
+#include "../ecs/isystem.h"
 
 #define MAP_SIZE 1024
 
-void EnvironmentInit(void);
-void EnvironmentGroundDraw3D(void);
-void EnvironmentDestroy(void);
-void EnvironmentUpdate(void);
+// Terrain, ground plane, and ambient environment rendering.
+class EnvironmentSystem : public ISystem {
+public:
+    void Init()    override;
+    void Update()  override;
+    void Draw3D()  override;
+    void Destroy() override;
+};
+
+extern EnvironmentSystem environment_system;

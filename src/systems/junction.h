@@ -1,16 +1,14 @@
 #pragma once
+#include "../ecs/isystem.h"
 
-// Initialise the junction system. Call once after TrackSystemInit.
-void JunctionSystemInit();
+// Junction placement, rendering, and switch toggling.
+class JunctionSystem : public ISystem {
+public:
+    void Init()    override;
+    void Update()  override;
+    void Draw3D()  override;
+    void Draw2D()  override;
+    void Destroy() override;
+};
 
-// Process junction placement input. Call once per frame before Draw.
-void JunctionSystemUpdate();
-
-// Draw committed junctions and the ghost preview. Must be called inside BeginMode3D.
-void JunctionSystemDraw3D();
-
-// Draw 2D placement overlays (frog info, snap hint). Must be called outside BeginMode3D.
-void JunctionSystemDraw2D();
-
-// Release all resources.
-void JunctionSystemDestroy();
+extern JunctionSystem junction_system;

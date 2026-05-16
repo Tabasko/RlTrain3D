@@ -1,24 +1,18 @@
 #pragma once
 #include "../types.h"
+#include "../ecs/isystem.h"
 #include <stdio.h>
 
-// Initialise GPU resources and load tile meshes. Call once after InitWindow.
-void TrackSystemInit();
+// Tile-based track placement, GPU instancing, and routing graph.
+class TrackSystem : public ISystem {
+public:
+    void Init()    override;
+    void Update()  override;
+    void Draw3D()  override;
+    void Draw2D()  override;
+    void Destroy() override;
+    void Save(FILE *f);
+    void Load(FILE *f);
+};
 
-// Process placement input. Call once per frame before Draw.
-void TrackSystemUpdate();
-
-// Draw committed tiles and the in-progress ghost. Must be called inside BeginMode3D.
-void TrackSystemDraw3D();
-
-// Draw 2D placement overlays. Must be called outside BeginMode3D.
-void TrackSystemDraw2D();
-
-// Release all GPU resources.
-void TrackSystemDestroy();
-
-// Serialize all placed tiles to an open file.
-void TrackSystemSave(FILE *f);
-
-// Replace all placed tiles from an open file; rebuilds instance buffers.
-void TrackSystemLoad(FILE *f);
+extern TrackSystem track_system;

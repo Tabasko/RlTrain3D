@@ -48,7 +48,9 @@ static void place_wind_turbines(int count) {
 // Public interface
 // ---------------------------------------------------------------------------
 
-void PropsInit(void) {
+PropsSystem props_system;
+
+void PropsSystem::Init() {
     s_mast  = LoadModel("resources/windTurbineMast.glb");
     s_rotor = LoadModel("resources/windTurbineRotor.glb");
     s_texture = LoadTexture("resources/windTurbineBasic3Base.png");
@@ -60,7 +62,7 @@ void PropsInit(void) {
     place_wind_turbines(WIND_TURBINE_COUNT);
 }
 
-void PropsUpdate(void) {
+void PropsSystem::Update() {
     float dt = GetFrameTime();
     for (int i = 0; i < prop_count; i++) {
         PropInstance *p = &props[i];
@@ -69,7 +71,7 @@ void PropsUpdate(void) {
     }
 }
 
-void PropsDraw3D(void) {
+void PropsSystem::Draw3D() {
     for (int i = 0; i < prop_count; i++) {
         PropInstance *p = &props[i];
 
@@ -84,7 +86,7 @@ void PropsDraw3D(void) {
     }
 }
 
-void PropsDestroy(void) {
+void PropsSystem::Destroy() {
     UnloadTexture(s_texture);
     UnloadModel(s_mast);
     UnloadModel(s_rotor);
@@ -102,7 +104,7 @@ static PropType prop_type_from_name(const char *name) {
     return (PropType)-1; // unrecognised
 }
 
-void PropsSave(FILE *f) {
+void PropsSystem::Save(FILE *f) {
     fprintf(f, "PROPS %d\n", prop_count);
     for (int i = 0; i < prop_count; i++) {
         const PropInstance *p = &props[i];
@@ -113,7 +115,7 @@ void PropsSave(FILE *f) {
     }
 }
 
-void PropsLoad(FILE *f) {
+void PropsSystem::Load(FILE *f) {
     prop_count = 0;
     int n = 0;
     if (fscanf(f, " PROPS %d", &n) != 1) return;

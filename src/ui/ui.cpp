@@ -62,6 +62,7 @@ void UiDrawLeftPanel(void) {
         { ICON_ROTATE,         "Rotate"    },
         { ICON_GRID,           "Terrain"   },
         { ICON_PLAYER,         "Add Train" },
+        { ICON_ALARM,          "Signal" },
         { ICON_GEAR,           "Settings"  },
     };
     static const int tool_count = sizeof(tools) / sizeof(tools[0]);
@@ -74,6 +75,7 @@ void UiDrawLeftPanel(void) {
             if (i == 2) gs.events.emit(EVENT_START_JUNCTION_EDIT);
             if (i == 3) gs.events.emit(EVENT_START_ERASE_EDIT);
             if (i == 6) gs.events.emit(EVENT_START_TRAIN_PLACE);
+            if (i == 7) gs.events.emit(EVENT_START_SIGNAL_PLACE);
         }
         y += PANEL_ITEM_H + PANEL_PAD / 2;
     }
@@ -139,7 +141,7 @@ static UI_Dialog_Type s_dialog_type = (UI_Dialog_Type)-1;
 void UiUpdate(void) {
     if (!UI_IsActive()) {
         // ESC is consumed by the track system while editing; only open exit dialog otherwise
-        if (IsKeyPressed(KEY_ESCAPE) && !gs.app.track_editing && !gs.app.junction_editing && !gs.app.erase_editing && !gs.app.train_placing) {
+        if (IsKeyPressed(KEY_ESCAPE) && !gs.app.track_editing && !gs.app.junction_editing && !gs.app.erase_editing && !gs.app.train_placing && !gs.app.signal_placing) {
             s_dialog_type = CONFIRM_EXIT;
             UI_ShowConfirm("Exit Game", "Do you want to exit the Game.",
                            UI_CONFIRM_PANEL_EXIT, 2);

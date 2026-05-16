@@ -35,6 +35,16 @@ bool IsEndpointAt(Vector3 pos);
 // If a junction exists within snap range of pos, toggle its thrown state and return true.
 bool TryThrowJunction(Vector3 pos);
 
+// Register an AABB entity in the tile_bounds pool for a single tile.
+void AddTileBounds(int tile_idx);
+
+// Rebuild the entire tile_bounds pool from s_tiles — call after any bulk load
+// that populates s_tiles without going through PlaceTile.
+void RebuildTileBoundsPool();
+
+// Reset the tile_bounds ECS pool — call before bulk-clearing s_tiles.
+void TileBoundsClear();
+
 // True if the ghost tile [entry→exit] body overlaps any placed tile.
 // Ghost entry/exit that land on an open endpoint are exempt (valid connections).
 bool GhostCollides(Vector3 entry, Vector3 exit);

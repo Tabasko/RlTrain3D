@@ -2,15 +2,14 @@
 #include "train_catalog.h"
 #include "track_geom.h"
 #include "track_tiles.h"
+#include "../events/event_bus.h"
 #include "../state/game_state.h"
 #include "../types.h"
 #include "../ui/ui.h"
 #include "raylib.h"
 #include "raymath.h"
+#include <cfloat>
 #include <cmath>
-
-// Click-to-tile pick radius in world units.
-static constexpr float TRAIN_PICK_R = 2.0f;
 
 static TileTrain s_trains[MAX_TILE_TRAINS];
 static int       s_train_count = 0;
@@ -52,31 +51,43 @@ static bool JunctionNextTile(int tile_idx, int ep_idx,
 // Tile picking
 // ---------------------------------------------------------------------------
 
-// Project click onto each tile's chord (eps[0]→eps[1]) and return the closest
-// tile index within TRAIN_PICK_R, or -1. Fills arc_dist_out with the
-// approximate arc distance from eps[0] (chord-based, sufficient for placement).
-static int PickTile(Vector3 click, float *arc_dist_out) {
-    int   best      = -1;
-    float best_dist = TRAIN_PICK_R;
+// Cast ray against each tile's AABB (stored in gs.ecs.tile_bounds). Returns the
+// tile_idx of the nearest hit, or -1 if no tile was struck. Fills arc_dist_out
+// with the chord-projected arc distance from eps[0] — one projection, on the
+// winner only, so arc_dist remains exact for placement regardless of tile shape.
+static int PickTile(Ray ray, float *arc_dist_out) {
+    auto& pool      = gs.ecs.tile_bounds;
+    float best_dist = FLT_MAX;
+    int   best_tile = -1;
 
-    for (int i = 0; i < (int)s_tiles.size(); i++) {
-        const PlacedTile& t = s_tiles[i];
+    for (int i = 0; i < pool.count; i++) {
+        RayCollision col = GetRayCollisionBox(ray, pool.data[i].box);
+        if (!col.hit || col.distance >= best_dist) continue;
+        best_dist = col.distance;
+        best_tile = pool.data[i].tile_idx;
+    }
+
+    if (best_tile >= 0 && arc_dist_out) {
+        const PlacedTile& t   = s_tiles[best_tile];
         Vector3 a  = t.eps[0].pos;
         Vector3 b  = t.eps[1].pos;
         Vector3 ab = { b.x - a.x, 0.0f, b.z - a.z };
         float ab_len2 = ab.x * ab.x + ab.z * ab.z;
-        if (ab_len2 < 1e-6f) continue;
-        float u = ((click.x - a.x) * ab.x + (click.z - a.z) * ab.z) / ab_len2;
-        u = Clamp(u, 0.0f, 1.0f);
-        Vector3 closest = { a.x + u * ab.x, 0.0f, a.z + u * ab.z };
-        float dist = Vector3Distance(click, closest);
-        if (dist < best_dist) {
-            best_dist     = dist;
-            best          = i;
+        if (ab_len2 > 1e-6f) {
+            // Project the ray-ground intersection onto the chord for arc_dist.
+            float denom = ray.direction.y;
+            float u     = 0.5f; // fallback: mid-tile
+            if (fabsf(denom) > 1e-6f) {
+                float   tval = -ray.position.y / denom;
+                Vector3 hit  = { ray.position.x + tval * ray.direction.x, 0.0f,
+                                 ray.position.z + tval * ray.direction.z };
+                u = ((hit.x - a.x) * ab.x + (hit.z - a.z) * ab.z) / ab_len2;
+                u = Clamp(u, 0.0f, 1.0f);
+            }
             *arc_dist_out = u * s_geom[t.type].length;
         }
     }
-    return best;
+    return best_tile;
 }
 
 // ---------------------------------------------------------------------------
@@ -109,12 +120,7 @@ static bool CrossBoundary(TileTrain& tr, int ep_idx, float overflow) {
         tr.arc_dist     = (ep_idx == 1) ? s_geom[s_tiles[tr.tile_idx].type].length : 0.0f;
         tr.speed        = 0.0f;
         tr.target_speed = -tr.target_speed;
-        _Event e;
-        e.type = _EventType::TRAIN_ARRIVED_STATION;
-        e.params["stationName"] = std::string("Düsseldorf Hbf");
-        e.params["track"] = 5;
-
-        gs.bus.emit(e);
+        gs.events.emit(EVENT_TRAIN_ARRIVED_STATION);
         return false;
     }
 
@@ -210,13 +216,15 @@ static void AdvanceTrain(TileTrain& tr, float dt) {
 // Public interface
 // ---------------------------------------------------------------------------
 
-void TrainSystemInit() {
+TrainSystem train_system;
+
+void TrainSystem::Init() {
     for (int i = 0; i < MAX_TILE_TRAINS; i++)
         s_trains[i].tile_idx = -1;
     TrainCatalogInit();
 }
 
-void TrainSystemUpdate() {
+void TrainSystem::Update() {
     float dt = GetFrameTime();
 
     if (gs.events.has(EVENT_START_TRAIN_PLACE)) {
@@ -231,25 +239,18 @@ void TrainSystemUpdate() {
             gs.app.train_placing = false;
         } else if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
                    !UiMouseInToolbar() && !UiMouseInPanel()) {
-            Ray   ray   = GetMouseRay(GetMousePosition(), gs.camera.cam);
-            float denom = ray.direction.y;
-            if (fabsf(denom) > 1e-6f) {
-                float   t   = -ray.position.y / denom;
-                Vector3 hit = { ray.position.x + t * ray.direction.x,
-                                0.0f,
-                                ray.position.z + t * ray.direction.z };
-                float arc = 0.0f;
-                int   idx = PickTile(hit, &arc);
-                if (idx >= 0 && s_train_count < MAX_TILE_TRAINS) {
-                    for (int i = 0; i < MAX_TILE_TRAINS; i++) {
-                        if (s_trains[i].tile_idx < 0) {
-                            s_trains[i] = { 0, idx, arc, 0.0f, 5.0f };
-                            s_train_count++;
-                            break;
-                        }
+            Ray   ray = GetMouseRay(GetMousePosition(), gs.camera.cam);
+            float arc = 0.0f;
+            int   idx = PickTile(ray, &arc);
+            if (idx >= 0 && s_train_count < MAX_TILE_TRAINS) {
+                for (int i = 0; i < MAX_TILE_TRAINS; i++) {
+                    if (s_trains[i].tile_idx < 0) {
+                        s_trains[i] = { 0, idx, arc, 0.0f, 5.0f };
+                        s_train_count++;
+                        break;
                     }
-                    gs.app.train_placing = false;
                 }
+                gs.app.train_placing = false;
             }
         }
     }
@@ -259,7 +260,7 @@ void TrainSystemUpdate() {
             AdvanceTrain(s_trains[i], dt);
 }
 
-void TrainSystemDraw3D() {
+void TrainSystem::Draw3D() {
     for (int i = 0; i < MAX_TILE_TRAINS; i++) {
         if (s_trains[i].tile_idx < 0) continue;
         const TileTrain& tr = s_trains[i];
@@ -269,11 +270,11 @@ void TrainSystemDraw3D() {
     }
 }
 
-void TrainSystemDestroy() {
+void TrainSystem::Destroy() {
     TrainCatalogDestroy();
 }
 
-void TrainSystemSave(FILE *f) {
+void TrainSystem::Save(FILE *f) {
     int count = 0;
     for (int i = 0; i < MAX_TILE_TRAINS; i++)
         if (s_trains[i].tile_idx >= 0) count++;
@@ -287,7 +288,7 @@ void TrainSystemSave(FILE *f) {
     }
 }
 
-void TrainSystemLoad(FILE *f) {
+void TrainSystem::Load(FILE *f) {
     for (int i = 0; i < MAX_TILE_TRAINS; i++)
         s_trains[i].tile_idx = -1;
     s_train_count = 0;

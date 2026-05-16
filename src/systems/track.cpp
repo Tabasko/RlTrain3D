@@ -196,7 +196,9 @@ static bool GroundPos(Vector3 *out) {
 // Public API
 // ---------------------------------------------------------------------------
 
-void TrackSystemInit() {
+TrackSystem track_system;
+
+void TrackSystem::Init() {
     TrackGeomInit();
 
     // Load only assets that currently exist; missing slots are skipped at draw time.
@@ -233,7 +235,7 @@ void TrackSystemInit() {
         TraceLog(LOG_WARNING, "TRACK: failed to load assets/icons/arrowUp.png");
 }
 
-void TrackSystemUpdate() {
+void TrackSystem::Update() {
     // ── Mode activation ────────────────────────────────────────────────────
     // Events from the UI flip the two mutually-exclusive editing modes and
     // reset all transient state so there is no carry-over between sessions.
@@ -409,7 +411,7 @@ void TrackSystemUpdate() {
     }
 }
 
-void TrackSystemDraw3D() {
+void TrackSystem::Draw3D() {
     for (const PlacedTile& tile : s_tiles) {
         int mi = MESH_IDX[tile.type];
         if (!s_mesh_ok[mi]) continue;
@@ -449,7 +451,7 @@ void TrackSystemDraw3D() {
     }
 }
 
-void TrackSystemDraw2D() {
+void TrackSystem::Draw2D() {
     if (gs.app.erase_editing && s_erase_drag) {
         Rectangle r = {
             fminf(s_erase_start.x, s_erase_end.x),
@@ -522,10 +524,11 @@ void TrackSystemDraw2D() {
              (int)sc.x + 14, (int)sc.y - 10, 20, COL_ACCENT);
 }
 
-void TrackSystemDestroy() {
+void TrackSystem::Destroy() {
     for (int i = 0; i < NUM_MESHES; i++)
         if (s_mesh_ok[i]) UnloadModel(s_meshes[i]);
     if (s_tex_arrow_ok) UnloadTexture(s_tex_arrow);
+    TileBoundsClear();
     s_tiles.clear();
     s_junctions.clear();
     s_ghost.clear();
@@ -535,7 +538,7 @@ void TrackSystemDestroy() {
 // Save / Load
 // ---------------------------------------------------------------------------
 
-void TrackSystemSave(FILE *f) {
+void TrackSystem::Save(FILE *f) {
     fprintf(f, "TILES %d\n", (int)s_tiles.size());
     for (const PlacedTile& t : s_tiles) {
         const Matrix& m = t.world;
@@ -554,7 +557,7 @@ void TrackSystemSave(FILE *f) {
         fprintf(f, "%.6f %.6f %.6f %d\n", jn.pos.x, jn.pos.y, jn.pos.z, jn.thrown);
 }
 
-void TrackSystemLoad(FILE *f) {
+void TrackSystem::Load(FILE *f) {
     s_tiles.clear();
     s_junctions.clear();
     s_ghost.clear();
@@ -614,6 +617,7 @@ void TrackSystemLoad(FILE *f) {
         AutoLink(i);
 
     RebuildInstanceBuffers();
+    RebuildTileBoundsPool();
 
     // Apply saved junction thrown states (topology was rebuilt by AutoLink above).
     int njunc = 0;

@@ -12,7 +12,11 @@ typedef enum {
     EVENT_START_ERASE_EDIT,
     EVENT_FILE_OPEN,
     EVENT_FILE_SAVE,
-    EVENT_START_TRAIN_PLACE
+    EVENT_START_TRAIN_PLACE,
+    EVENT_TRAIN_ARRIVED_STATION,
+    EVENT_TRAIN_PASSES_SIGNAL,
+    EVENT_TRAIN_DEPARTED,
+    EVENT_START_SIGNAL_PLACE,
 } EventType;
 
 // Payload carrier — add field types here as new events require them.

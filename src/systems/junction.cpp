@@ -7,10 +7,12 @@
 #include "raylib.h"
 #include "raymath.h"
 
-void JunctionSystemInit()    {}
-void JunctionSystemDestroy() {}
+JunctionSystem junction_system;
 
-void JunctionSystemUpdate() {
+void JunctionSystem::Init()    {}
+void JunctionSystem::Destroy() {}
+
+void JunctionSystem::Update() {
     if (gs.events.has(EVENT_START_JUNCTION_EDIT))
         gs.app.junction_editing = true;
     if (!gs.app.junction_editing) return;
@@ -33,7 +35,7 @@ void JunctionSystemUpdate() {
     }
 }
 
-void JunctionSystemDraw3D() {
+void JunctionSystem::Draw3D() {
     if (s_junctions.empty()) return;
 
     for (const JunctionNode& jn : s_junctions) {
@@ -51,7 +53,7 @@ void JunctionSystemDraw3D() {
     }
 }
 
-void JunctionSystemDraw2D() {
+void JunctionSystem::Draw2D() {
     if (!gs.app.junction_editing) return;
     int count = (int)s_junctions.size();
     DrawText(TextFormat("Junction mode — %d junction%s  [LMB] throw  [RMB/ESC] exit",

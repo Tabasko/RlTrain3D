@@ -40,9 +40,9 @@ typedef struct {
 void UI_ShowConfirm(const char *title, const char *message,
                     UI_ButtonDef *buttonDefs, int count);
 void UiDraw(void);
-int  UI_GetResult(void);
-void UI_Dismiss(void);
-bool UI_IsActive(void);
+// int  UI_GetResult(void);
+// void UI_Dismiss(void);
+// bool UI_IsActive(void);
 
 void UiUpdate(void);
 bool UiMouseInToolbar(void);
@@ -50,4 +50,4 @@ bool UiMouseInPanel(void);
 void UiDrawToolbar(void);
 void UiDrawLeftPanel(void);
 void UiDrawRightPanel(void);
-void UiDrawRoutesWorld(void);
+// void UiDrawRoutesWorld(void);

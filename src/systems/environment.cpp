@@ -19,7 +19,9 @@ static RenderTexture s_lightmap;
 static Light         s_sun;
 static Vector2       s_lightmap_scroll = { 0.0f, 0.0f };
 
-void EnvironmentInit(void) {
+EnvironmentSystem environment_system;
+
+void EnvironmentSystem::Init() {
     s_shader = LoadShader("resources/shaders/glsl330/lightmap_lit.vs",
                            "resources/shaders/glsl330/lightmap_lit.fs");
     s_shader.locs[SHADER_LOC_VECTOR_VIEW] = GetShaderLocation(s_shader, "viewPos");
@@ -94,7 +96,7 @@ void EnvironmentInit(void) {
     s_ground_mat.maps[MATERIAL_MAP_METALNESS].texture = s_lightmap.texture;
 }
 
-void EnvironmentUpdate(void) {
+void EnvironmentSystem::Update() {
     float cam_pos[3] = {
         gs.camera.cam.position.x,
         gs.camera.cam.position.y,
@@ -103,7 +105,7 @@ void EnvironmentUpdate(void) {
     SetShaderValue(s_shader, s_shader.locs[SHADER_LOC_VECTOR_VIEW], cam_pos, SHADER_UNIFORM_VEC3);
 }
 
-void EnvironmentGroundDraw3D(void) {
+void EnvironmentSystem::Draw3D() {
     float dt = GetFrameTime();
     s_lightmap_scroll.x = fmodf(s_lightmap_scroll.x + 0.0075f * dt, 1.0f);
     s_lightmap_scroll.y = fmodf(s_lightmap_scroll.y + 0.004f  * dt, 1.0f);
@@ -119,7 +121,7 @@ void EnvironmentGroundDraw3D(void) {
     DrawMesh(s_ground_mesh, s_ground_mat, MatrixIdentity());
 }
 
-void EnvironmentDestroy(void) {
+void EnvironmentSystem::Destroy() {
     UnloadMesh(s_ground_mesh);
     UnloadShader(s_shader);
     UnloadTexture(s_ground_tex);

@@ -1,6 +1,6 @@
 #include "event_bus.h"
 
-static constexpr int EVENT_BUS_CAPACITY = 64;
+static constexpr int EVENT_BUS_CAPACITY = 128;
 
 void EventBus::init() {
     read.reserve(EVENT_BUS_CAPACITY);

@@ -1,20 +1,16 @@
 #pragma once
+#include "../ecs/isystem.h"
 #include <stdio.h>
 
-// Initialise GPU resources and load the tram model. Call once after InitWindow.
-void TrainSystemInit();
+// Train placement, physics, pathfinding, and rendering.
+class TrainSystem : public ISystem {
+public:
+    void Init()    override;
+    void Update()  override;
+    void Draw3D()  override;
+    void Destroy() override;
+    void Save(FILE *f);
+    void Load(FILE *f);
+};
 
-// Process placing input and advance all active trains. Call once per frame before Draw.
-void TrainSystemUpdate();
-
-// Draw all active trains. Must be called inside BeginMode3D.
-void TrainSystemDraw3D();
-
-// Release all GPU resources.
-void TrainSystemDestroy();
-
-// Serialize all active trains to an open file.
-void TrainSystemSave(FILE *f);
-
-// Replace all active trains from an open file.
-void TrainSystemLoad(FILE *f);
+extern TrainSystem train_system;

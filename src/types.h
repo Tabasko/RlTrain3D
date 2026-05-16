@@ -6,7 +6,12 @@
 #include "raymath.h"
 #include <math.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <string.h>
+
+// Opaque entity handle; 0 is reserved (ENTITY_NULL). Defined here so C-style
+// structs that store a handle (e.g. PlacedTile) do not need to pull in registry.h.
+typedef uint32_t EntityID;
 
 
 // ---------------------------------------------------------------------------
@@ -54,6 +59,11 @@ typedef enum {
   TRAIN_SUBWAY,
   TRAIN_TYPE_COUNT
 } TrainType;
+
+typedef enum {
+    PROP_WIND_TURBINE,
+    PROP_TYPE_COUNT
+} PropType;
 
 // ---------------------------------------------------------------------------
 // Junction
@@ -133,10 +143,11 @@ typedef struct {
 // One placed tile instance.
 typedef struct {
   TileType     type;
-  ArcDirection direction; // traversal constraint
-  Matrix       world;     // world transform, computed once at placement
-  TileEndpoint eps[2];    // [0]=entry  [1]=exit
-  int          ep_count;  // 2 for straight/curve
+  ArcDirection direction;    // traversal constraint
+  Matrix       world;        // world transform, computed once at placement
+  TileEndpoint eps[2];       // [0]=entry  [1]=exit
+  int          ep_count;     // 2 for straight/curve
+  EntityID     bounds_entity; // ECS entity holding the CTileBounds for ray-pick
 } PlacedTile;
 
 // One leg of a 3-way junction — identifies which tile endpoint participates.

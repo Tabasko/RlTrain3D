@@ -1,5 +1,10 @@
 #include "track_tiles.h"
+#include "../state/game_state.h"
 #include "raymath.h"
+
+// Padding applied to each tile AABB on all four horizontal sides so a click
+// within this many world units of the tile chord registers as a hit.
+static constexpr float TILE_BOUNDS_PAD = 2.0f;
 
 std::vector<PlacedTile>   s_tiles;
 std::vector<JunctionNode> s_junctions;
@@ -95,6 +100,8 @@ static void EraseJunction(int ji) {
 }
 
 void RemoveTile(int idx) {
+    EntityID dying_entity = s_tiles[idx].bounds_entity;
+
     // Step 1: detach this tile from any junctions, downgrading as needed.
     for (int ji = (int)s_junctions.size() - 1; ji >= 0; ji--) {
         JunctionNode& jn = s_junctions[ji];
@@ -152,6 +159,12 @@ void RemoveTile(int idx) {
         for (int l = 0; l < jn.leg_count; l++)
             if (jn.legs[l].tile_idx > idx)
                 jn.legs[l].tile_idx--;
+
+    // Remove the bounds entity and patch tile_idx in surviving entries.
+    gs.ecs.destroy(dying_entity);
+    for (int i = 0; i < gs.ecs.tile_bounds.count; i++)
+        if (gs.ecs.tile_bounds.data[i].tile_idx > idx)
+            gs.ecs.tile_bounds.data[i].tile_idx--;
 }
 
 void PlaceTile(TileType type, Vector3 pos, float heading, ArcDirection dir) {
@@ -177,7 +190,30 @@ void PlaceTile(TileType type, Vector3 pos, float heading, ArcDirection dir) {
     t.eps[1].linked_junction = TILE_NO_LINK;
 
     s_tiles.push_back(t);
-    AutoLink((int)s_tiles.size() - 1);
+    int new_idx = (int)s_tiles.size() - 1;
+    AutoLink(new_idx);
+    AddTileBounds(new_idx);
+}
+
+// Register one AABB entity for ray-picking. Y range covers the tile at ground level.
+void AddTileBounds(int tile_idx) {
+    Vector3 a = s_tiles[tile_idx].eps[0].pos;
+    Vector3 b = s_tiles[tile_idx].eps[1].pos;
+    BoundingBox box = {
+        { fminf(a.x, b.x) - TILE_BOUNDS_PAD, -1.0f, fminf(a.z, b.z) - TILE_BOUNDS_PAD },
+        { fmaxf(a.x, b.x) + TILE_BOUNDS_PAD,  1.0f, fmaxf(a.z, b.z) + TILE_BOUNDS_PAD },
+    };
+    EntityID eid = gs.ecs.create();
+    gs.ecs.tile_bounds.add(eid, { box, tile_idx });
+    s_tiles[tile_idx].bounds_entity = eid;
+}
+
+// Rebuild the entire tile_bounds pool from the current s_tiles contents.
+// Call after any bulk load that bypasses PlaceTile.
+void RebuildTileBoundsPool() {
+    TileBoundsClear();
+    for (int i = 0; i < (int)s_tiles.size(); i++)
+        AddTileBounds(i);
 }
 
 void SampleTileLine(Vector3 a, Vector3 b, Vector3 out[TILE_SAMPLE_N]) {
@@ -240,4 +276,8 @@ bool GhostCollides(Vector3 entry, Vector3 exit) {
         }
     }
     return false;
+}
+
+void TileBoundsClear() {
+    gs.ecs.tile_bounds.count = 0;
 }
